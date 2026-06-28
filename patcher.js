@@ -3,19 +3,17 @@
 
 ;(function IDVPatcher() {
 
-// ─────────────────────────────────────────────────────────────────────────────
+// Safe sessionStorage wrappers — sandboxed iframes throw SecurityError
+function ssGet(k)    { try { return sessionStorage.getItem(k) }  catch(_) { return null } }
+function ssSet(k, v) { try { sessionStorage.setItem(k, v) }      catch(_) {} }
+
 // IMAGE STORE — sync from sessionStorage + async via postMessage
-// ─────────────────────────────────────────────────────────────────────────────
 const IDV = {
-  dlFront: sessionStorage.getItem('__idv_dl_front__') || null,
-  dlBack:  sessionStorage.getItem('__idv_dl_back__')  || null,
-  selfies: [
-    sessionStorage.getItem('__idv_selfie_0__'),
-    sessionStorage.getItem('__idv_selfie_1__'),
-    sessionStorage.getItem('__idv_selfie_2__')
-  ].filter(Boolean),
-  phase:    'id',
-  idStep:   0,
+  dlFront: ssGet('__idv_dl_front__'),
+  dlBack:  ssGet('__idv_dl_back__'),
+  selfies: [ssGet('__idv_selfie_0__'), ssGet('__idv_selfie_1__'), ssGet('__idv_selfie_2__')].filter(Boolean),
+  phase:   ssGet('__idv_phase__') || 'id',
+  idStep:  0,
   cameraActive: false
 }
 
@@ -195,7 +193,7 @@ if (typeof MediaDevices !== 'undefined') {
     // Wait up to 8s for images
     for (let i = 0; i < 40; i++) {
       if (IDV.dlFront) break
-      const ss = sessionStorage.getItem('__idv_dl_front__')
+      const ss = ssGet('__idv_dl_front__')
       if (ss) { IDV.dlFront = ss; break }
       await new Promise(r => setTimeout(r, 200))
     }
@@ -296,7 +294,7 @@ function onDOMChange() {
   }
   if (IDV.phase !== 'selfie' && SELFIE_W.some(w => text.includes(w))) {
     IDV.phase = 'selfie'
-    sessionStorage.setItem('__idv_phase__', 'selfie')
+    ssSet('__idv_phase__', 'selfie')
     window.postMessage({ _idv: 'IDV_PHASE_REQUEST', phase: 'selfie' }, '*')
     console.log('[IDV] → Selfie phase')
   }

@@ -1,16 +1,17 @@
 // ISOLATED world — loads images and injects into MAIN world ASAP
 
+function ssGet(k)    { try { return sessionStorage.getItem(k) }  catch(_) { return null } }
+function ssSet(k, v) { try { sessionStorage.setItem(k, v) }      catch(_) {} }
+
 function pushImages() {
   chrome.storage.local.get(['dl_front','dl_back','selfie_0','selfie_1','selfie_2'], r => {
-    const phase = sessionStorage.getItem('__idv_phase__') || 'id'
+    const phase = ssGet('__idv_phase__') || 'id'
 
     // Write to sessionStorage first (sync access in MAIN world)
     const keys = { dl_front: r.dl_front, dl_back: r.dl_back, selfie_0: r.selfie_0, selfie_1: r.selfie_1, selfie_2: r.selfie_2 }
     for (const [k, v] of Object.entries(keys)) {
       if (!v) continue
-      try { sessionStorage.setItem('__idv_' + k + '__', v) } catch(e) {
-        console.log('[IDV-bridge] sessionStorage full, key=' + k)
-      }
+      ssSet('__idv_' + k + '__', v)
     }
 
     // postMessage for MAIN world pickup
@@ -42,7 +43,7 @@ window.addEventListener('message', ev => {
 
   if (d?._idv === 'IDV_PHASE_REQUEST') {
     const phase = d.phase || 'selfie'
-    sessionStorage.setItem('__idv_phase__', phase)
+    ssSet('__idv_phase__', phase)
     pushImages()
   }
 })
