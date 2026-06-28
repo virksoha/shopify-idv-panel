@@ -15,7 +15,10 @@ const IDV = {
   phase:      'id',  // always start with ID — switch to selfie via DOM watcher
   idStep:     0,
   camActive:  false,
-  currentImg: null   // live canvas reference for mid-stream image swap
+  currentImg: null,  // live canvas reference for mid-stream image swap
+  adjZoom:    1.08,  // user-controlled scale multiplier
+  adjOffX:    0,     // user-controlled X offset (pixels)
+  adjOffY:    0      // user-controlled Y offset (pixels)
 }
 
 window.addEventListener('message', ev => {
@@ -35,10 +38,12 @@ window.addEventListener('message', ev => {
     ssSet('__idv_phase__', IDV.phase)
     console.log('[IDV] Manual switch → phase=' + IDV.phase + ' idStep=' + IDV.idStep)
     showToast('⬡ IDV: Switched to ' + (IDV.phase === 'selfie' ? 'Selfie' : IDV.idStep === 1 ? 'ID Back' : 'ID Front'), '#1e3a5f')
-    // Reload the canvas image immediately if camera is active
-    if (IDV.camActive) {
-      loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
-    }
+    if (IDV.camActive) loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
+  }
+  if (d?._idv === 'IDV_ADJUST') {
+    if (d.zoom  !== undefined) IDV.adjZoom = d.zoom
+    if (d.offX  !== undefined) IDV.adjOffX = d.offX
+    if (d.offY  !== undefined) IDV.adjOffY = d.offY
   }
 })
 
@@ -134,7 +139,7 @@ async function buildFakeStream(src) {
 
   function draw() {
     const ci = IDV.currentImg || img
-    const baseScale = Math.min(W / ci.naturalWidth, H / ci.naturalHeight) * 1.08
+    const baseScale = Math.min(W / ci.naturalWidth, H / ci.naturalHeight) * IDV.adjZoom
     ox += vx; oy += vy; sc += vs
     if (Math.abs(ox) > 8)   vx *= -1
     if (Math.abs(oy) > 5)   vy *= -1
@@ -142,7 +147,10 @@ async function buildFakeStream(src) {
     const s = baseScale * sc
     ctx.fillStyle = '#111'
     ctx.fillRect(0, 0, W, H)
-    ctx.drawImage(ci, (W - ci.naturalWidth*s)/2 + ox, (H - ci.naturalHeight*s)/2 + oy, ci.naturalWidth*s, ci.naturalHeight*s)
+    ctx.drawImage(ci,
+      (W - ci.naturalWidth*s)/2  + ox + IDV.adjOffX,
+      (H - ci.naturalHeight*s)/2 + oy + IDV.adjOffY,
+      ci.naturalWidth*s, ci.naturalHeight*s)
     // Vignette
     const g = ctx.createRadialGradient(W/2, H/2, H*.32, W/2, H/2, H*.72)
     g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.2)')

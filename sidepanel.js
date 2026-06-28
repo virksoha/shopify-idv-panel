@@ -91,6 +91,12 @@ async function init() {
   document.getElementById('camBtnFront').addEventListener('click', () => switchCam('front'))
   document.getElementById('camBtnBack').addEventListener('click', () => switchCam('back'))
   document.getElementById('camBtnSelfie').addEventListener('click', () => switchCam('selfie'))
+
+  // Image adjustments
+  setupAdjSlider('adjZoom', 'adjZoomVal', v => v + '%')
+  setupAdjSlider('adjX',    'adjXVal',    v => v)
+  setupAdjSlider('adjY',    'adjYVal',    v => v)
+  document.getElementById('adjReset').addEventListener('click', resetAdj)
 }
 
 async function detectStore() {
@@ -291,6 +297,44 @@ function doClear() {
   chrome.runtime.sendMessage({ type: 'CLEAR_SESSION', store: currentStore })
   currentSession = null
   render()
+}
+
+// ── Image adjust sliders ─────────────────────────────────────────────────────
+function sendAdjust() {
+  const zoom = parseInt(document.getElementById('adjZoom').value) / 100
+  const offX = parseInt(document.getElementById('adjX').value)
+  const offY = parseInt(document.getElementById('adjY').value)
+  chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+    const tabId = tabs[0]?.id
+    if (!tabId) return
+    chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: 'MAIN',
+      func: (zoom, offX, offY) => {
+        window.postMessage({ _idv: 'IDV_ADJUST', zoom, offX, offY }, '*')
+      },
+      args: [zoom, offX, offY]
+    }).catch(() => {})
+  })
+}
+
+function setupAdjSlider(sliderId, valId, fmt) {
+  const slider = document.getElementById(sliderId)
+  const valEl  = document.getElementById(valId)
+  slider.addEventListener('input', () => {
+    valEl.textContent = fmt(slider.value)
+    sendAdjust()
+  })
+}
+
+function resetAdj() {
+  document.getElementById('adjZoom').value = 108
+  document.getElementById('adjX').value    = 0
+  document.getElementById('adjY').value    = 0
+  document.getElementById('adjZoomVal').textContent = '108%'
+  document.getElementById('adjXVal').textContent    = '0'
+  document.getElementById('adjYVal').textContent    = '0'
+  sendAdjust()
 }
 
 // ── Camera switcher ──────────────────────────────────────────────────────────
