@@ -69,15 +69,36 @@ function showToast(msg, bg) {
 if (document.body) initBadge()
 else document.addEventListener('DOMContentLoaded', initBadge)
 
-// ── Load image helper ─────────────────────────────────────────────────────────
+// ── Load image helper — converts base64 → Blob URL to bypass CSP data: block ──
+function b64ToBlob(dataUrl) {
+  try {
+    const [header, b64] = dataUrl.split(',')
+    const mime = header.match(/:(.*?);/)[1]
+    const bin  = atob(b64)
+    const arr  = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+    return URL.createObjectURL(new Blob([arr], { type: mime }))
+  } catch(e) {
+    console.log('[IDV] b64ToBlob error:', e.message)
+    return null
+  }
+}
+
 function loadImg(src) {
   return new Promise(resolve => {
     if (!src) return resolve(null)
-    const i = new Image()
-    i.onload  = () => resolve(i)
-    i.onerror = () => { console.log('[IDV] ✗ Image failed to load'); resolve(null) }
-    setTimeout(() => resolve(null), 6000)
-    i.src = src
+    const img = new Image()
+    img.onload  = () => resolve(img)
+    img.onerror = () => { console.log('[IDV] ✗ Image onerror — CSP or bad data?'); resolve(null) }
+    setTimeout(() => { console.log('[IDV] ✗ Image timeout'); resolve(null) }, 6000)
+    // Convert base64 → blob URL to bypass Shopify CSP (blocks data: URLs)
+    if (src.startsWith('data:')) {
+      const blobUrl = b64ToBlob(src)
+      console.log('[IDV] Using blob URL:', !!blobUrl)
+      img.src = blobUrl || src
+    } else {
+      img.src = src
+    }
   })
 }
 
