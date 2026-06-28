@@ -115,7 +115,7 @@ async function buildFakeStream(src) {
   canvas.width = W; canvas.height = H
   const ctx = canvas.getContext('2d')
 
-  const baseScale = Math.min(W / img.naturalWidth, H / img.naturalHeight) * 0.86
+  const baseScale = Math.min(W / img.naturalWidth, H / img.naturalHeight) * 1.08
   let ox = 0, oy = 0, sc = 1, vx = 0.15, vy = 0.1, vs = 0.0001
 
   function draw() {
