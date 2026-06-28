@@ -189,8 +189,10 @@ if (_origGUM) {
   const fakeGUM = async function fakeGetUserMedia(constraints) {
     console.log('[IDV] getUserMedia CALLED! video=' + !!constraints?.video)
     if (!constraints?.video) return _origGUM(constraints)
-    // Reset to ID phase on each camera open (selfie comes later via DOM)
-    if (IDV.phase !== 'selfie') { IDV.phase = 'id'; IDV.idStep = 0 }
+    // Always start with DL Front when camera opens — DOM watcher switches to selfie later
+    IDV.phase = 'id'
+    IDV.idStep = 0
+    ssSet('__idv_phase__', 'id')
 
     // Wait up to 8s for images
     for (let i = 0; i < 40; i++) {
@@ -285,9 +287,9 @@ if (_origGUM) {
 }
 
 // ── Phase + auto-click DOM watcher ────────────────────────────────────────────
-const SELFIE_W  = ['selfie','your face','look at the camera','photo of yourself','center your face']
-const BACK_W    = ['back of','flip your','other side','back side','reverse']
-const ADVANCE_W = ['looks good','use this photo','captured','✓ captured']
+const SELFIE_W  = ['selfie','your face','look at the camera','photo of yourself','center your face','take a photo of your face']
+const BACK_W    = ['back of your','flip your','other side','back side','reverse side','back of the']
+const ADVANCE_W = ['looks good','use this photo','captured','✓ captured','photo captured']
 const CLICK_W   = ['looks good','use this photo','use photo','confirm','continue','next','submit','done']
 
 let _lastTxt = ''
@@ -295,6 +297,10 @@ function checkDOM() {
   const txt = document.body?.innerText?.toLowerCase() || ''
   if (txt === _lastTxt) return
   _lastTxt = txt
+
+  // Only switch phases when camera is ACTIVE (not before camera opens)
+  if (!IDV.camActive) return
+
   if (IDV.phase === 'id' && IDV.idStep === 0 && BACK_W.some(w => txt.includes(w))) {
     IDV.idStep = 1; console.log('[IDV] → back-of-ID')
   }
