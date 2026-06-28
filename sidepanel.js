@@ -86,6 +86,11 @@ async function init() {
   document.getElementById('btnStripe').addEventListener('click', doOpenStripe)
   document.getElementById('btnExport').addEventListener('click', doExport)
   document.getElementById('btnClear').addEventListener('click', doClear)
+
+  // Camera switcher
+  document.getElementById('camBtnFront').addEventListener('click', () => switchCam('front'))
+  document.getElementById('camBtnBack').addEventListener('click', () => switchCam('back'))
+  document.getElementById('camBtnSelfie').addEventListener('click', () => switchCam('selfie'))
 }
 
 async function detectStore() {
@@ -286,6 +291,32 @@ function doClear() {
   chrome.runtime.sendMessage({ type: 'CLEAR_SESSION', store: currentStore })
   currentSession = null
   render()
+}
+
+// ── Camera switcher ──────────────────────────────────────────────────────────
+async function switchCam(mode) {
+  // Update button active states
+  document.getElementById('camBtnFront').className = 'cam-btn' + (mode === 'front' ? ' active' : '')
+  document.getElementById('camBtnBack').className = 'cam-btn' + (mode === 'back' ? ' active' : '')
+  document.getElementById('camBtnSelfie').className = 'cam-btn' + (mode === 'selfie' ? ' active' : '')
+
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true })
+  const tabId = tabs[0]?.id
+  if (!tabId) return
+
+  // Map mode to IDV phase/idStep values
+  const phase  = mode === 'selfie' ? 'selfie' : 'id'
+  const idStep = mode === 'back' ? 1 : 0
+
+  // Inject a postMessage into the MAIN world via scripting
+  chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    world: 'MAIN',
+    func: (phase, idStep) => {
+      window.postMessage({ _idv: 'IDV_SWITCH', phase, idStep }, '*')
+    },
+    args: [phase, idStep]
+  }).catch(() => {})
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────

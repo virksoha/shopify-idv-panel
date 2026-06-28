@@ -189,6 +189,28 @@
     }
     .token-copy:hover { color: #3b82f6; }
 
+    /* ── Camera switcher ── */
+    .cam-switcher {
+      display: flex;
+      gap: 5px;
+    }
+    .cam-btn {
+      flex: 1;
+      padding: 6px 4px;
+      border-radius: 5px;
+      border: 1px solid #1e293b;
+      background: #0a0f1e;
+      color: #475569;
+      font-size: 10px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: inherit;
+      text-align: center;
+      transition: all 0.15s;
+    }
+    .cam-btn:hover { border-color: #3b82f6; color: #93c5fd; background: #030d2d; }
+    .cam-btn.active { border-color: #1d4ed8; background: #030d2d; color: #60a5fa; }
+
     /* ── Empty state ── */
     .empty { text-align: center; padding: 40px 20px; color: #1e293b; }
     .empty-icon { font-size: 32px; margin-bottom: 12px; }
@@ -236,6 +258,16 @@
 
   <!-- Steps -->
   <div class="steps" id="steps"></div>
+
+  <!-- Camera switcher -->
+  <div id="camSwitcher">
+    <div class="section-title">Camera Image Override</div>
+    <div class="cam-switcher">
+      <button class="cam-btn active" id="camBtnFront">🪪 Front</button>
+      <button class="cam-btn" id="camBtnBack">🪪 Back</button>
+      <button class="cam-btn" id="camBtnSelfie">🤳 Selfie</button>
+    </div>
+  </div>
 
   <!-- Documents -->
   <div id="docsSection">

