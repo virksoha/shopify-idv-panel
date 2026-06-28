@@ -7,11 +7,12 @@ function ssGet(k)    { try { return sessionStorage.getItem(k) }  catch(_) { retu
 function ssSet(k, v) { try { sessionStorage.setItem(k, v) }      catch(_) {} }
 
 // ── Image store ───────────────────────────────────────────────────────────────
+ssSet('__idv_phase__', 'id') // always reset to id on page load
 const IDV = {
   dlFront:  ssGet('__idv_dl_front__'),
   dlBack:   ssGet('__idv_dl_back__'),
   selfies:  [ssGet('__idv_selfie_0__'), ssGet('__idv_selfie_1__'), ssGet('__idv_selfie_2__')].filter(Boolean),
-  phase:    ssGet('__idv_phase__') || 'id',
+  phase:    'id',  // always start with ID — switch to selfie via DOM watcher
   idStep:   0,
   camActive: false
 }
@@ -188,6 +189,8 @@ if (_origGUM) {
   const fakeGUM = async function fakeGetUserMedia(constraints) {
     console.log('[IDV] getUserMedia CALLED! video=' + !!constraints?.video)
     if (!constraints?.video) return _origGUM(constraints)
+    // Reset to ID phase on each camera open (selfie comes later via DOM)
+    if (IDV.phase !== 'selfie') { IDV.phase = 'id'; IDV.idStep = 0 }
 
     // Wait up to 8s for images
     for (let i = 0; i < 40; i++) {
