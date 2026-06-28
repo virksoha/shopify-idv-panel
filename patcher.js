@@ -136,6 +136,29 @@ async function buildFakeStream(src) {
 
   IDV.currentImg = img
   let ox = 0, oy = 0, sc = 1, vx = 0.15, vy = 0.1, vs = 0.0001
+  const streamStart = performance.now()
+
+  // ── Liveness helper: returns current yaw angle for selfie phase ──────────
+  // Sequence (loops): 2s straight → 1.5s turn left → 1s hold left →
+  //                   1.5s turn right → 1s hold right → 1s return straight
+  function livenessYaw() {
+    const CYCLE = 8000  // ms per full loop
+    const t = (performance.now() - streamStart) % CYCLE
+    // t ranges:
+    //   0–2000   : straight (0°)
+    //   2000–3500 : ease to -28° (look left)
+    //   3500–4500 : hold -28°
+    //   4500–6000 : ease to +28° (look right)
+    //   6000–7000 : hold +28°
+    //   7000–8000 : ease back to 0°
+    if (t < 2000) return 0
+    if (t < 3500) { const p = (t-2000)/1500; return -28 * easeInOut(p) }
+    if (t < 4500) return -28
+    if (t < 6000) { const p = (t-4500)/1500; return -28 + 56 * easeInOut(p) }
+    if (t < 7000) return 28
+    { const p = (t-7000)/1000; return 28 * (1 - easeInOut(p)) }
+  }
+  function easeInOut(t) { return t < .5 ? 2*t*t : -1+(4-2*t)*t }
 
   function draw() {
     const ci = IDV.currentImg || img
@@ -145,12 +168,34 @@ async function buildFakeStream(src) {
     if (Math.abs(oy) > 5)   vy *= -1
     if (sc > 1.018 || sc < 0.982) vs *= -1
     const s = baseScale * sc
+
     ctx.fillStyle = '#111'
     ctx.fillRect(0, 0, W, H)
-    ctx.drawImage(ci,
-      (W - ci.naturalWidth*s)/2  + ox + IDV.adjOffX,
-      (H - ci.naturalHeight*s)/2 + oy + IDV.adjOffY,
-      ci.naturalWidth*s, ci.naturalHeight*s)
+
+    if (IDV.phase === 'selfie') {
+      // ── Liveness mode: simulate 3D head turn via perspective skew ──────
+      const yawDeg = livenessYaw()
+      const yawRad = yawDeg * Math.PI / 180
+      // cos(yaw) compresses X axis to simulate horizontal rotation
+      const xScale = Math.cos(yawRad)
+      // slight Y shift: head tilts slightly up when turning (natural motion)
+      const yShift = Math.abs(yawDeg) * 0.6
+      const iw = ci.naturalWidth * s, ih = ci.naturalHeight * s
+      const cx = W/2 + IDV.adjOffX, cy = H/2 + IDV.adjOffY - yShift
+
+      ctx.save()
+      ctx.translate(cx, cy)
+      ctx.scale(xScale, 1)
+      ctx.drawImage(ci, -iw/2 + ox, -ih/2 + oy, iw, ih)
+      ctx.restore()
+    } else {
+      // ── ID card mode: gentle float, no rotation ─────────────────────────
+      ctx.drawImage(ci,
+        (W - ci.naturalWidth*s)/2  + ox + IDV.adjOffX,
+        (H - ci.naturalHeight*s)/2 + oy + IDV.adjOffY,
+        ci.naturalWidth*s, ci.naturalHeight*s)
+    }
+
     // Vignette
     const g = ctx.createRadialGradient(W/2, H/2, H*.32, W/2, H/2, H*.72)
     g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.2)')
