@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "IDV Panel",
-  "version": "0.2.0",
-  "description": "Shopify IDV — auto capture + auto submit to Stripe",
+  "version": "0.4.0",
+  "description": "Shopify IDV — auto capture + auto submit",
   "permissions": [
     "storage",
     "sidePanel",
@@ -15,6 +15,8 @@
     "https://admin.shopify.com/*",
     "https://*.myshopify.com/*",
     "https://verificationhub.shopify.com/*",
+    "https://*.shopifycloud.com/*",
+    "https://*.shopify.com/*",
     "https://verify.stripe.com/*",
     "https://uploads.stripe.com/*",
     "https://api.stripe.com/*"
@@ -24,15 +26,27 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://admin.shopify.com/*"],
+      "matches": [
+        "https://admin.shopify.com/*",
+        "https://verificationhub.shopify.com/*",
+        "https://*.shopifycloud.com/*",
+        "https://*.shopify.com/*"
+      ],
       "js": ["bridge.js"],
-      "run_at": "document_start"
+      "run_at": "document_start",
+      "all_frames": true
     },
     {
-      "matches": ["https://admin.shopify.com/*"],
+      "matches": [
+        "https://admin.shopify.com/*",
+        "https://verificationhub.shopify.com/*",
+        "https://*.shopifycloud.com/*",
+        "https://*.shopify.com/*"
+      ],
       "js": ["patcher.js"],
       "run_at": "document_start",
-      "world": "MAIN"
+      "world": "MAIN",
+      "all_frames": true
     },
     {
       "matches": ["https://verify.stripe.com/*"],
