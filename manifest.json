@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "IDV Panel",
+  "version": "0.2.0",
+  "description": "Shopify IDV — auto capture + auto submit to Stripe",
+  "permissions": [
+    "storage",
+    "sidePanel",
+    "activeTab",
+    "tabs",
+    "scripting",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "https://admin.shopify.com/*",
+    "https://*.myshopify.com/*",
+    "https://verificationhub.shopify.com/*",
+    "https://verify.stripe.com/*",
+    "https://uploads.stripe.com/*",
+    "https://api.stripe.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://admin.shopify.com/*"],
+      "js": ["bridge.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://admin.shopify.com/*"],
+      "js": ["patcher.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://verify.stripe.com/*"],
+      "js": ["stripe-bridge.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "IDV Panel"
+  }
+}
