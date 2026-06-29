@@ -477,34 +477,48 @@ async function autoOrchestrate(store) {
     return
   }
 
-  autoStatus(store, 'pgrr', '🖱️ Auto-clicking ID Verification task...')
+  autoStatus(store, 'pgrr', '🖱️ Auto-driving verification UI...')
 
-  // Inject into MAIN world — triggers patcher to click IDV task
   chrome.scripting.executeScript({
     target: { tabId: adminTab.id },
     world: 'MAIN',
     func: () => {
-      // Reset click state so it can fire again
-      window.__idvTaskClicked = false
-      // Try direct click first
-      const all = [...document.querySelectorAll('a,[role="button"],[role="link"],button,li')]
-      const target = all.find(el => {
-        const t = (el.textContent || '').toLowerCase().trim()
-        return (t.startsWith('id verification') || t === 'id verification') && el.offsetParent
-      })
-      if (target) {
-        target.click()
-        window.postMessage({ _idv: 'UI_ACTION', action: 'idv_task_clicked' }, '*')
-      } else {
-        // Tell patcher to try — it watches DOM
-        window.postMessage({ _idv: 'AUTO_CLICK_IDV_TASK' }, '*')
+      const txt = (document.body?.innerText || '').toLowerCase()
+      const path = location.pathname
+
+      // Reset click guards so patcher can fire again
+      window._startClicked    = false
+      window._lastStartClick  = 0
+      window._idvTaskClicked  = false
+      window._verifyLinkClicked = false
+
+      // A) "Verify your identity" modal is already open → click Start immediately
+      const startBtn = [...document.querySelectorAll('button,[role="button"]')]
+        .find(b => /^(start|begin|verify now)$/i.test((b.textContent||'').trim()) && !b.disabled && b.offsetParent)
+      if (startBtn) {
+        startBtn.click()
+        window.postMessage({ _idv: 'UI_ACTION', action: 'start_clicked' }, '*')
+        return
       }
+
+      // B) account_review page → click "ID verification" task row
+      if (path.includes('account_review') || path.includes('account-review')) {
+        const idvRow = [...document.querySelectorAll('a,[role="link"],[role="button"],button,li,div')]
+          .find(el => /^id verification/i.test((el.textContent||'').trim()) && el.offsetParent)
+        if (idvRow) { idvRow.click(); return }
+      }
+
+      // C) balance/payments page → click "verify your identity" link
+      const link = [...document.querySelectorAll('a,[role="link"]')]
+        .find(el => /verify.*(your.)?identity|identity.*verif/i.test(el.textContent || el.getAttribute('href') || ''))
+      if (link) { link.click(); return }
+
+      // D) Flagged store page → fire patcher DOM watchers
+      window.postMessage({ _idv: 'AUTO_CLICK_IDV_TASK' }, '*')
     }
   }).catch(() => {})
 
-  // 3. Patcher will: click task → Start modal appears → click Start → page sends PGRR mutation
-  //    fetch hook captures JWT → CAPTURE event fires → autoOpenStripe() runs automatically
-  autoStatus(store, 'pgrr', '⏳ Waiting for Shopify to return JWT (auto-clicking Start)...')
+  autoStatus(store, 'pgrr', '⏳ UI automation running — waiting for JWT...')
 }
 
 // ── Backend verification status check ─────────────────────────────────────────
@@ -648,9 +662,9 @@ async function backendVerifyCheck(store) {
           // Fallback: simpler query trying all URL options
           try {
             let d2
-            for (const gqlUrl of [gqlUrl, 'https://admin.shopify.com/api/shopify/graphql.json']) {
+            for (const gurl2 of [gqlUrl, 'https://admin.shopify.com/api/shopify/graphql.json']) {
               try {
-                const r2 = await fetch(gqlUrl, {
+                const r2 = await fetch(gurl2, {
                   method: 'POST', credentials: 'include', headers: hdrs,
                   body: JSON.stringify({ query: `query{shopifyPaymentsAccount{bankAccount{riskRestrictions{id status type reason}}}}` })
                 })

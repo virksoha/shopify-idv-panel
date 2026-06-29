@@ -919,6 +919,9 @@ function checkDOM() {
     _autoClickTimer = setTimeout(autoClick, 800)
   }
 
+  // On balance/payments page: auto-click "verify your identity" link → navigate
+  autoClickVerifyLink(txt)
+
   // Step 1: On account_review, click "ID Verification" task to open the IDV flow
   autoClickIdvTask(txt)
 
@@ -1055,23 +1058,33 @@ function autoClickIdvTask(txt) {
   }, 1800)
 }
 
-// Step 2: auto-click "Start" / "Begin" / "Get Started" when IDV modal appears
+// Step 2: auto-click "Start" when IDV modal appears
+// Runs on every DOM change — finds the button even if _startClicked is stale
+let _lastStartClick = 0
 function autoClickStartIfNeeded(txt) {
-  if (_startClicked) return
   const hasVerify = txt.includes('verify your identity') || txt.includes('keep your account secure')
-                 || txt.includes('government-issued id') || txt.includes('submit a valid')
+                 || txt.includes('stripe') && txt.includes('identity')
   if (!hasVerify) return
-  const startBtn = [...document.querySelectorAll('button,[role="button"],a')]
-    .find(b => /^(start|begin|get started|start verification|continue|verify now)$/i.test((b.textContent||'').trim()) && !b.disabled && b.offsetParent)
-  if (startBtn) {
-    _startClicked = true
-    setTimeout(() => {
-      startBtn.click()
-      showToast('⬡ IDV: Auto-clicked Start!', '#052e16')
-      window.postMessage({ _idv: 'UI_ACTION', action: 'start_clicked' }, '*')
-      setTimeout(() => { _startClicked = false }, 30000)
-    }, 800)
-  }
+
+  // Find visible Start button
+  const startBtn = [...document.querySelectorAll('button,[role="button"]')]
+    .find(b => /^(start|begin|get started|start verification|verify now)$/i.test((b.textContent||'').trim())
+            && !b.disabled && b.offsetParent !== null)
+  if (!startBtn) return
+
+  // Debounce: don't click same button twice within 8s
+  const now = Date.now()
+  if (now - _lastStartClick < 8000) return
+  _lastStartClick = now
+  _startClicked = true
+
+  setTimeout(() => {
+    startBtn.click()
+    showToast('⬡ IDV: Auto-clicked Start — waiting for JWT...', '#052e16')
+    window.postMessage({ _idv: 'UI_ACTION', action: 'start_clicked' }, '*')
+    // Auto-reset after 15s so it can retry if JWT never came
+    setTimeout(() => { _startClicked = false; _lastStartClick = 0 }, 15000)
+  }, 500)
 }
 
 function autoClickByText(phrases) {
@@ -1120,6 +1133,25 @@ function fireModalDetected(reason) {
   window.postMessage({ _idv: 'STRIPE_MODAL_DETECTED', href: location.href, store, reason }, '*')
 }
 
+// Auto-navigate: on balance/payments page detect "verify your identity" link → click it
+let _verifyLinkClicked = false
+function autoClickVerifyLink(txt) {
+  if (_verifyLinkClicked) return
+  if (!txt.includes('verify your identity') && !txt.includes('verify identity')) return
+  // Only on non-account_review pages (balance, payments etc)
+  if (location.pathname.includes('account_review') || location.pathname.includes('account-review')) return
+  const link = [...document.querySelectorAll('a,[role="link"]')]
+    .find(el => /verify.*(your.)?identity|identity.*verif/i.test(el.textContent || el.getAttribute('href') || ''))
+  if (link) {
+    _verifyLinkClicked = true
+    setTimeout(() => {
+      link.click()
+      showToast('⬡ IDV: Auto-navigating to verification page...', '#1d4ed8')
+      setTimeout(() => { _verifyLinkClicked = false }, 30000)
+    }, 1000)
+  }
+}
+
 function checkModalPopup() {
   try {
     const body = document.body
@@ -1136,6 +1168,8 @@ function checkModalPopup() {
 
     if ((hasTitle || hasStripe) && hasBtn) {
       fireModalDetected('popup')
+      // Also try to click Start immediately when popup detected
+      autoClickStartIfNeeded(txt)
       return
     }
 
@@ -1152,6 +1186,9 @@ function checkModalPopup() {
         fireModalDetected('flagged_page')
       }
     }
+
+    // Case 5: balance/payments page with "verify your identity" link → auto-navigate
+    autoClickVerifyLink(txt)
 
     // Case 4: "Couldn't verify ID" failure popup — detect and report immediately
     const verifyFailed = txt.includes("couldn't verify") || txt.includes('could not verify')
