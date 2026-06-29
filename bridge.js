@@ -68,6 +68,11 @@ window.addEventListener('message', ev => {
   if (d?._idv === 'SUBMIT_CONFIDENCE') {
     chrome.runtime.sendMessage({ type: 'SUBMIT_CONFIDENCE', ready: d.ready, captured: d.captured, taskStates: d.taskStates }).catch(() => {})
   }
+
+  if (d?._idv === 'BACKEND_STATUS_RESULT') {
+    const store = window.location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
+    chrome.runtime.sendMessage({ type: 'BACKEND_STATUS_FROM_PAGE', store, result: d.result }).catch(() => {})
+  }
 })
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {

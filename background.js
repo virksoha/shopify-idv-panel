@@ -1,4 +1,4 @@
-// IDV Panel — Background Service Worker v0.6.0
+// IDV Panel — Background Service Worker v0.9.0
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
 
@@ -58,20 +58,32 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await autoOpenStripe(jwt, msg.store)
       }
 
-      // Step 4→5: Stripe submitted → auto-start discharge poll
+      // Step 4→5: Stripe submitted → backend check + start discharge poll
       const sStatus = msg.captures?.stripe_session_status
       if (['processing','verified','succeeded'].includes(sStatus) && msg.store) {
-        notify('stripe_' + msg.store, '🟣 Stripe Submitted!', `${msg.store} — Starting discharge poll...`)
-        autoStatus(msg.store, 'stripe_done', '🟣 Stripe submitted! Starting discharge poll...')
+        notify('stripe_' + msg.store, '🟣 Stripe Submitted!', `${msg.store} — Checking backend + starting poll...`)
+        autoStatus(msg.store, 'stripe_done', '🟣 Stripe submitted! Running backend check...')
+        // Run backend check immediately, then start poll
+        setTimeout(() => backendVerifyCheck(msg.store), 5000)
         const session = await getSession(msg.store)
         const rid = session?.state?.risk_restriction_id || session?.state?.active_restriction_id
         if (rid && !pollTimers[msg.store]) startPoll(msg.store, rid)
       }
 
-      // Step 5: Discharged!
-      if (msg.captures?.discharge_detected === true) {
-        notify('discharge_' + msg.store, '✅ DISCHARGED!', `${msg.store} — All done! Store is active.`)
-        autoStatus(msg.store, 'discharged', '✅ DISCHARGED! Store restriction cleared!')
+      // Step 5: Discharged (from poll) — confirm with backend check
+      if (msg.captures?.discharge_detected === true && msg.captures?._event !== 'backend_verify_check') {
+        autoStatus(msg.store, 'discharged', '✅ Poll detected discharge — confirming with backend...')
+        // Confirm with authoritative backend check
+        const confirmed = await backendVerifyCheck(msg.store)
+        if (confirmed?.overallStatus !== 'DISCHARGED') {
+          // Poll said discharged but backend still shows active — keep polling
+          autoStatus(msg.store, 'stripe_submit', '⚠️ Poll said discharged but backend still active — continuing poll...')
+        }
+        // backendVerifyCheck handles notification + stopPoll if really discharged
+      }
+      if (msg.captures?.discharge_detected === true && msg.captures?._event === 'backend_verify_check') {
+        notify('discharge_' + msg.store, '✅ CONFIRMED DISCHARGED!', `${msg.store} — Backend verified: restriction cleared!`)
+        autoStatus(msg.store, 'discharged', '✅ Backend CONFIRMED: DISCHARGED — store fully active!')
         stopPoll(msg.store)
       }
 
@@ -179,6 +191,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     injectDiscovery(msg.store).then(rid => sendResponse({ restrictionId: rid }))
     return true
   }
+
+  if (msg.type === 'BACKEND_CHECK') {
+    backendVerifyCheck(msg.store).then(result => {
+      broadcastToSidePanel({ type: 'BACKEND_STATUS', store: msg.store, result })
+      sendResponse(result)
+    })
+    return true
+  }
+
+  if (msg.type === 'BACKEND_STATUS_FROM_PAGE') {
+    broadcastToSidePanel({ type: 'BACKEND_STATUS', store: msg.store, result: msg.result })
+    return true
+  }
 })
 
 // ── Session storage ────────────────────────────────────────────────────────────
@@ -254,19 +279,44 @@ async function triggerPollNow(store, restrictionId) {
   }
   broadcastToSidePanel({ type: 'POLL_TICK', store, meta: pollMeta[store] })
 
-  // Inject a GQL poll into the admin tab — patcher will auto-capture the response
+  // Inject a GQL poll into the admin tab — richer query with restriction details
   chrome.scripting.executeScript({
     target: { tabId: adminTab.id },
     world: 'MAIN',
     func: (store) => {
-      const q = `query IDVPoll{shopifyPaymentsAccount{bankAccount{riskRestrictions{id status}}}}`
+      const q = `query IDVPoll {
+        shopifyPaymentsAccount {
+          bankAccount {
+            riskRestrictions { id status type reason updatedAt }
+          }
+          verifications { id status type requirement updatedAt }
+        }
+      }`
       fetch('https://admin.shopify.com/api/shopify/graphql.json', {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: q })
       }).then(r => r.json()).then(data => {
-        // patcher's fetch hook will auto-capture this, but also send explicitly
         window.postMessage({ _idv: 'POLL_RESULT', store, data }, '*')
+        // Also extract verifications and send to panel
+        const acc  = data?.data?.shopifyPaymentsAccount
+        const rrs  = acc?.bankAccount?.riskRestrictions || []
+        const vfs  = acc?.verifications || []
+        const active = rrs.filter(r => r.status === 'ACTIVE')
+        const failed = vfs.filter(v => ['failed','FAILED','rejected','REJECTED'].includes(v.status))
+        const passed = vfs.filter(v => ['verified','VERIFIED','approved','APPROVED'].includes(v.status))
+        window.postMessage({
+          _idv: 'CAPTURE', store, url: 'shopify/graphql',
+          captures: {
+            discharge_detected: active.length === 0 && rrs.length > 0,
+            backend_verifications: vfs,
+            backend_failed_count: failed.length,
+            backend_passed_count: passed.length,
+            backend_issues: failed.map(v => v.requirement || v.type || v.status),
+            _event: active.length === 0 && rrs.length > 0 ? 'discharge_detected' : 'poll_still_active'
+          },
+          timestamp: Date.now()
+        }, '*')
       }).catch(() => {})
     },
     args: [store]
@@ -405,6 +455,196 @@ async function autoOrchestrate(store) {
     autoStatus(store, 'pgrr_fail', `🔑 PGRR failed: ${pgrr?.error || 'unknown'} — try clicking Start manually`)
   }
   // JWT capture fires CAPTURE event → auto-opens Stripe automatically
+}
+
+// ── Backend verification status check ─────────────────────────────────────────
+// Queries Shopify GQL directly from admin tab to get full verification state
+async function backendVerifyCheck(store) {
+  const adminTab = await getAdminTab()
+  if (!adminTab) return { ok: false, error: 'No Shopify admin tab open — navigate to admin.shopify.com first' }
+
+  autoStatus(store, 'backend_check', '🔍 Querying Shopify backend for verification status...')
+
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: adminTab.id },
+      world: 'MAIN',
+      func: async () => {
+        const csrf = document.querySelector('meta[name="csrf-token"]')?.content || window?.Shopify?.csrfToken || ''
+        const hdrs = { 'Content-Type': 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) }
+
+        // Deep query: restriction details + verification sessions + identity verification
+        const q = `query IDVBackendCheck {
+          shopifyPaymentsAccount {
+            id
+            bankAccount {
+              id
+              riskRestrictions {
+                id
+                status
+                type
+                reason
+                createdAt
+                updatedAt
+              }
+            }
+            verifications {
+              id
+              status
+              type
+              requirement
+              updatedAt
+            }
+          }
+          currentAccountUser {
+            id
+            email
+          }
+        }`
+
+        try {
+          const res  = await fetch('https://admin.shopify.com/api/shopify/graphql.json', {
+            method: 'POST', credentials: 'include', headers: hdrs,
+            body: JSON.stringify({ query: q })
+          })
+          const data = await res.json()
+          const acc  = data?.data?.shopifyPaymentsAccount
+          const ba   = acc?.bankAccount
+          const store = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
+
+          // Active restrictions
+          const activeRestrictions = (ba?.riskRestrictions || []).filter(r => r.status === 'ACTIVE')
+          const allRestrictions    = ba?.riskRestrictions || []
+
+          // Verification items
+          const verifications = acc?.verifications || []
+          const pendingVerifs = verifications.filter(v => v.status !== 'verified' && v.status !== 'VERIFIED')
+          const failedVerifs  = verifications.filter(v => ['failed','FAILED','rejected','REJECTED','error','ERROR'].includes(v.status))
+          const passedVerifs  = verifications.filter(v => ['verified','VERIFIED','approved','APPROVED','passed','PASSED'].includes(v.status))
+
+          // Determine overall status
+          let overallStatus, passPct
+          if (activeRestrictions.length === 0 && allRestrictions.length > 0) {
+            overallStatus = 'DISCHARGED'; passPct = 100
+          } else if (failedVerifs.length > 0) {
+            overallStatus = 'FAILED'; passPct = 0
+          } else if (activeRestrictions.length > 0 && pendingVerifs.length === 0) {
+            overallStatus = 'PENDING_REVIEW'; passPct = 80
+          } else if (activeRestrictions.length > 0) {
+            overallStatus = 'IN_PROGRESS'; passPct = Math.round((passedVerifs.length / Math.max(verifications.length,1)) * 100)
+          } else {
+            overallStatus = 'UNKNOWN'; passPct = 0
+          }
+
+          // Build issues list
+          const issues = []
+          for (const r of activeRestrictions) {
+            issues.push({ type: 'restriction', id: r.id, reason: r.reason || r.type || 'ACTIVE restriction', status: r.status })
+          }
+          for (const v of failedVerifs) {
+            issues.push({ type: 'verification', id: v.id, reason: `${v.type || 'Verification'} ${v.status}`, requirement: v.requirement })
+          }
+          for (const v of pendingVerifs) {
+            issues.push({ type: 'pending', id: v.id, reason: `${v.type || 'Verification'} pending`, requirement: v.requirement })
+          }
+
+          const result = {
+            ok: true,
+            store,
+            overallStatus,
+            passPct,
+            activeRestrictions,
+            allRestrictions,
+            verifications,
+            pendingVerifs,
+            failedVerifs,
+            passedVerifs,
+            issues,
+            raw: data,
+            checkedAt: Date.now()
+          }
+
+          // Also fire as capture so session gets updated
+          if (store) {
+            window.postMessage({
+              _idv: 'CAPTURE', store, url: 'shopify/graphql',
+              captures: {
+                discharge_detected: activeRestrictions.length === 0 && allRestrictions.length > 0,
+                backend_pass_pct: passPct,
+                backend_status: overallStatus,
+                _event: 'backend_verify_check'
+              },
+              timestamp: Date.now()
+            }, '*')
+          }
+
+          // Also send directly to background for panel update
+          window.postMessage({ _idv: 'BACKEND_STATUS_RESULT', result }, '*')
+          return result
+
+        } catch(e) {
+          // Fallback: simpler query if deep one fails
+          try {
+            const res2 = await fetch('https://admin.shopify.com/api/shopify/graphql.json', {
+              method: 'POST', credentials: 'include', headers: hdrs,
+              body: JSON.stringify({ query: `query{shopifyPaymentsAccount{bankAccount{riskRestrictions{id status type reason}}}}` })
+            })
+            const d2 = await res2.json()
+            const arr = d2?.data?.shopifyPaymentsAccount?.bankAccount?.riskRestrictions || []
+            const active = arr.filter(r => r.status === 'ACTIVE')
+            return {
+              ok: true, overallStatus: active.length === 0 ? 'DISCHARGED' : 'ACTIVE',
+              passPct: active.length === 0 ? 100 : 0,
+              activeRestrictions: active, allRestrictions: arr,
+              verifications: [], issues: active.map(r => ({ type:'restriction', reason: r.reason || r.type || 'active', id: r.id })),
+              checkedAt: Date.now(), fallback: true
+            }
+          } catch(e2) { return { ok: false, error: String(e2) } }
+        }
+      },
+      args: []
+    })
+
+    const result = results?.[0]?.result
+    if (!result) return { ok: false, error: 'Script injection failed' }
+
+    // Log to session
+    if (store && result.ok) {
+      await handleCapture({
+        store,
+        url: 'shopify/graphql',
+        captures: {
+          backend_status: result.overallStatus,
+          backend_pass_pct: result.passPct,
+          discharge_detected: result.overallStatus === 'DISCHARGED',
+          _event: 'backend_verify_check'
+        },
+        timestamp: Date.now()
+      })
+    }
+
+    if (result.overallStatus === 'DISCHARGED') {
+      notify('discharged_' + store, '✅ VERIFIED & DISCHARGED!', `${store} — Backend confirms: restriction cleared!`)
+      autoStatus(store, 'discharged', '✅ Backend confirms: DISCHARGED — store is active!')
+      stopPoll(store)
+    } else if (result.overallStatus === 'FAILED') {
+      const reasons = result.issues.map(i => i.reason).join(', ')
+      notify('failed_' + store, '❌ Verification Failed', `${store} — ${reasons}`)
+      autoStatus(store, 'pgrr_fail', `❌ Backend: FAILED — ${reasons}`)
+    } else if (result.overallStatus === 'PENDING_REVIEW') {
+      autoStatus(store, 'stripe_submit', '⏳ Backend: Under review — polling for discharge...')
+      const session = await getSession(store)
+      const rid = session?.state?.risk_restriction_id || session?.state?.active_restriction_id
+      if (rid && !pollTimers[store]) startPoll(store, rid)
+    } else {
+      autoStatus(store, 'stripe_submit', `📡 Backend: ${result.overallStatus} — ${result.passPct}% complete`)
+    }
+
+    return result
+
+  } catch(e) {
+    return { ok: false, error: String(e) }
+  }
 }
 
 // ── Open Stripe verification ───────────────────────────────────────────────────

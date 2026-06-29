@@ -191,6 +191,9 @@ async function init() {
     if (msg.type === 'SUBMIT_CONFIDENCE') {
       updateConfidenceBar(msg.ready, msg.captured, msg.taskStates)
     }
+    if (msg.type === 'BACKEND_STATUS') {
+      updateBackendPanel(msg.result)
+    }
     if (msg.type === 'PAGE_CONTEXT') {
       if (msg.store && msg.store !== currentStore) {
         currentStore = msg.store
@@ -211,6 +214,7 @@ async function init() {
   })
 
   // Button wiring
+  document.getElementById('btnBackendCheck').addEventListener('click', doBackendCheck)
   document.getElementById('btnForce').addEventListener('click', doForceVerify)
   document.getElementById('btnStripe').addEventListener('click', doOpenStripe)
   document.getElementById('btnExport').addEventListener('click', doExport)
@@ -332,6 +336,10 @@ async function render() {
 
   // Quick nav
   document.getElementById('quickNav').style.display = hasStore ? 'block' : 'none'
+  // Backend panel — show when store active (but don't reset content if already showing)
+  if (hasStore && document.getElementById('backendPanel').style.display === 'none') {
+    document.getElementById('backendPanel').style.display = 'block'
+  }
 
   // Stripe button
   await updateStripeButton()
@@ -924,6 +932,71 @@ function showAutoBar(step, msg) {
   if (!['need_docs','discharged','pgrr_fail'].includes(step)) {
     autoBarTimer = setTimeout(() => bar.classList.remove('visible'), 30000)
   }
+}
+
+// ── Backend status panel ───────────────────────────────────────────────────────
+async function doBackendCheck() {
+  const btn = document.getElementById('btnBackendCheck')
+  if (btn) { btn.textContent = '...'; btn.disabled = true }
+  const store = currentStore
+  chrome.runtime.sendMessage({ type: 'BACKEND_CHECK', store }, result => {
+    if (btn) { btn.textContent = 'Check Now'; btn.disabled = false }
+    if (result) updateBackendPanel(result)
+  })
+}
+
+function updateBackendPanel(result) {
+  const panel = document.getElementById('backendPanel')
+  if (!panel) return
+  panel.style.display = 'block'
+
+  if (!result?.ok) {
+    panel.className = 'backend-panel fail'
+    document.getElementById('backendOverall').textContent = '❌ Check failed: ' + (result?.error || 'unknown')
+    return
+  }
+
+  const statusMap = {
+    DISCHARGED:     { cls: 'pass',    icon: '✅', label: 'DISCHARGED — Verification Passed!' },
+    FAILED:         { cls: 'fail',    icon: '❌', label: 'FAILED — Issues Found' },
+    PENDING_REVIEW: { cls: 'pending', icon: '⏳', label: 'UNDER REVIEW — Waiting for Shopify' },
+    IN_PROGRESS:    { cls: 'pending', icon: '🔄', label: 'IN PROGRESS' },
+    UNKNOWN:        { cls: '',        icon: '❓', label: 'UNKNOWN STATUS' }
+  }
+  const s = statusMap[result.overallStatus] || statusMap.UNKNOWN
+  panel.className = 'backend-panel ' + s.cls
+  document.getElementById('backendOverall').textContent = s.icon + ' ' + s.label
+
+  const pct = result.passPct || 0
+  document.getElementById('backendPassFill').style.width = pct + '%'
+  document.getElementById('backendPassLabel').textContent = `Backend pass confidence: ${pct}%`
+
+  // Verifications list
+  const verifEl = document.getElementById('backendVerifList')
+  if (verifEl && result.verifications?.length > 0) {
+    verifEl.innerHTML = result.verifications.map(v => {
+      const st = (v.status || '').toLowerCase()
+      const cls = st.includes('verif') || st.includes('approv') || st.includes('pass') ? 'bv-passed'
+                : st.includes('fail')  || st.includes('reject')                        ? 'bv-failed'
+                : st.includes('pend')  || st.includes('process')                       ? 'bv-pending'
+                : 'bv-unknown'
+      return `<div class="backend-verif-row"><span class="backend-verif-badge ${cls}">${v.status}</span><span>${v.type || v.requirement || ''}</span></div>`
+    }).join('')
+  } else if (verifEl) {
+    verifEl.innerHTML = result.fallback ? '<div style="font-size:9px;color:#6b7280">Verifications not available in fallback mode</div>' : ''
+  }
+
+  // Issues
+  const issueEl = document.getElementById('backendIssueList')
+  if (issueEl) {
+    issueEl.innerHTML = (result.issues || []).map(i =>
+      `<div class="backend-issue-row">${i.reason || i.requirement || i.type || 'Unknown issue'}</div>`
+    ).join('')
+  }
+
+  // Checked timestamp
+  const tsEl = document.getElementById('backendCheckedAt')
+  if (tsEl && result.checkedAt) tsEl.textContent = 'Last checked: ' + new Date(result.checkedAt).toLocaleTimeString()
 }
 
 // ── Submit confidence bar ──────────────────────────────────────────────────────

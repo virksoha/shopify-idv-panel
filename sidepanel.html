@@ -99,6 +99,33 @@
     .confidence-bar.ready .confidence-msg{color:#4ade80;font-weight:600}
     .conf-task-row{font-size:9px;color:#6b7280;padding:1px 0}
     .conf-task-row.done{color:#4ade80}
+    .backend-panel{background:#060606;border:1px solid #1f2937;border-radius:7px;padding:9px 11px;margin:4px 0}
+    .backend-panel.pass{border-color:#16a34a;background:#052e16}
+    .backend-panel.fail{border-color:#7f1d1d;background:#1a0505}
+    .backend-panel.pending{border-color:#78350f;background:#1c0a00}
+    .backend-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+    .backend-title{font-size:10px;color:#9ca3af;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+    .btn-backend-check{font-size:9px;padding:2px 8px;background:#1d4ed8;color:#fff;border:none;border-radius:4px;cursor:pointer}
+    .btn-backend-check:hover{background:#2563eb}
+    .backend-overall{font-size:13px;font-weight:700;color:#e5e7eb;margin-bottom:5px}
+    .backend-panel.pass  .backend-overall{color:#4ade80}
+    .backend-panel.fail  .backend-overall{color:#f87171}
+    .backend-panel.pending .backend-overall{color:#fbbf24}
+    .backend-pass-bar{height:5px;background:#1f2937;border-radius:3px;overflow:hidden;margin-bottom:3px}
+    .backend-pass-fill{height:100%;background:#1d4ed8;border-radius:3px;transition:width .5s}
+    .backend-panel.pass  .backend-pass-fill{background:#16a34a}
+    .backend-panel.fail  .backend-pass-fill{background:#dc2626}
+    .backend-panel.pending .backend-pass-fill{background:#d97706}
+    .backend-pass-label{font-size:9px;color:#6b7280;margin-bottom:4px}
+    .backend-verif-row{font-size:9px;padding:2px 0;display:flex;gap:6px;align-items:center}
+    .backend-verif-badge{padding:1px 5px;border-radius:3px;font-size:8px;font-weight:600;text-transform:uppercase}
+    .bv-passed{background:#052e16;color:#4ade80}
+    .bv-failed{background:#1a0505;color:#f87171}
+    .bv-pending{background:#1c0a00;color:#fbbf24}
+    .bv-unknown{background:#1f2937;color:#9ca3af}
+    .backend-issue-row{font-size:9px;color:#f87171;padding:1px 0;display:flex;gap:4px}
+    .backend-issue-row::before{content:"⚠";color:#ef4444}
+    .backend-checked{font-size:8px;color:#374151;margin-top:4px}
     .doc-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
     .doc-slot{border:1px dashed #1e293b;border-radius:6px;padding:8px;cursor:pointer;text-align:center;transition:all .15s;position:relative;background:#0a0f1e}
     .doc-slot:hover{border-color:#3b82f6;background:#030d2d}
@@ -326,6 +353,22 @@
       </div>
       <div class="confidence-msg" id="confidenceMsg">Waiting for photos...</div>
       <div id="confTaskList" style="display:none;margin-top:5px"></div>
+    </div>
+
+    <!-- Backend verification status panel -->
+    <div class="backend-panel" id="backendPanel" style="display:none">
+      <div class="backend-header">
+        <span class="backend-title">📡 Backend Status</span>
+        <button class="btn-backend-check" id="btnBackendCheck">Check Now</button>
+      </div>
+      <div class="backend-overall" id="backendOverall">—</div>
+      <div class="backend-pass-bar">
+        <div class="backend-pass-fill" id="backendPassFill" style="width:0%"></div>
+      </div>
+      <div class="backend-pass-label" id="backendPassLabel">Pass: 0%</div>
+      <div id="backendVerifList" style="margin-top:6px"></div>
+      <div id="backendIssueList" style="margin-top:4px"></div>
+      <div class="backend-checked" id="backendCheckedAt"></div>
     </div>
 
     <div id="quickNav" style="display:none">
