@@ -47,6 +47,49 @@ function getActiveSelfieSlot() {
   return IDV.selfieSlots[IDV.activeSelfieIdx] || IDV.selfieSlots[0] || null
 }
 
+// Grab current frame of a <video> as an <img>, so drawImage has a sane fallback
+async function captureVideoFrame(vid) {
+  if (!vid || vid.readyState < 2 || !vid.videoWidth) return null
+  try {
+    const c = document.createElement('canvas')
+    c.width = vid.videoWidth; c.height = vid.videoHeight
+    c.getContext('2d').drawImage(vid, 0, 0)
+    const dataUrl = c.toDataURL('image/jpeg', 0.9)
+    return await new Promise(resolve => {
+      const img = new Image()
+      img.onload  = () => resolve(img)
+      img.onerror = () => resolve(null)
+      img.src = dataUrl
+    })
+  } catch(_) { return null }
+}
+
+// Switch to selfie source — pick the right thing for IDV.currentImg
+async function activateSelfieSource() {
+  const slot = getActiveSelfieSlot()
+  if (!slot) {
+    IDV.currentImg = null
+    return
+  }
+  if (slot.kind === 'video' && slot.vidEl) {
+    startSelfieVideo(slot.vidEl)
+    // Capture first frame as fallback (so we never show stale ID image)
+    const frameImg = await captureVideoFrame(slot.vidEl)
+    if (frameImg) IDV.currentImg = frameImg
+    else IDV.currentImg = null  // clear stale ID
+    // Retry capture after short delay if video wasn't ready yet
+    if (!frameImg) {
+      setTimeout(async () => {
+        const f = await captureVideoFrame(slot.vidEl)
+        if (f) IDV.currentImg = f
+      }, 600)
+    }
+  } else if (slot.kind === 'image') {
+    const img = await loadImg(slot.src)
+    if (img) IDV.currentImg = img
+  }
+}
+
 // ── Message bus ────────────────────────────────────────────────────────────────
 window.addEventListener('message', ev => {
   if (ev.source !== window) return
@@ -63,9 +106,7 @@ window.addEventListener('message', ev => {
   }
   if (d?._idv === 'IDV_SELFIE_SLOT') {
     IDV.activeSelfieIdx = d.index || 0
-    const slot = getActiveSelfieSlot()
-    if (slot?.kind === 'video' && slot.vidEl) startSelfieVideo(slot.vidEl)
-    else if (slot?.kind === 'image') loadImg(slot.src).then(img => { if (img) IDV.currentImg = img })
+    activateSelfieSource()
   }
   if (d?._idv === 'IDV_SWITCH') {
     IDV.phase  = d.phase  ?? IDV.phase
@@ -75,8 +116,7 @@ window.addEventListener('message', ev => {
     IDV.adjZoom = a.zoom; IDV.adjOffX = a.offX; IDV.adjOffY = a.offY
     showToast('⬡ IDV: ' + (IDV.phase === 'selfie' ? 'Selfie' : IDV.idStep === 1 ? 'ID Back' : 'ID Front'), '#1e3a5f')
     if (IDV.camActive) {
-      const slot = IDV.phase === 'selfie' ? getActiveSelfieSlot() : null
-      if (slot?.kind === 'video' && slot.vidEl) startSelfieVideo(slot.vidEl)
+      if (IDV.phase === 'selfie') activateSelfieSource()
       else loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
     }
   }
@@ -129,11 +169,16 @@ function prepSlotVideo(slot, idx) {
   vid.muted = true; vid.loop = true; vid.playsInline = true
   vid.autoplay = true; vid.preload = 'auto'
   vid.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1'
-  vid.addEventListener('loadeddata', () => {
+  vid.addEventListener('loadeddata', async () => {
     slot.ready = true
     console.log('[IDV] ✓ slot ' + idx + ' video loaded: ' + vid.videoWidth + 'x' + vid.videoHeight)
     vid.play().catch(_ => {})
+    // Pre-capture poster frame so we have an instant fallback image
+    const poster = await captureVideoFrame(vid)
+    if (poster) slot.poster = poster
     updateBadge()
+    // If we're already in selfie phase, refresh currentImg to poster (clears stale ID)
+    if (IDV.phase === 'selfie' && IDV.camActive && slot.poster) IDV.currentImg = slot.poster
   })
   vid.addEventListener('error', () => console.log('[IDV] slot ' + idx + ' video error'))
   vid.src = blobUrl
@@ -271,11 +316,12 @@ async function buildFakeStream(src) {
 
   function drawVideo() {
     const slot = getActiveSelfieSlot()
-    if (!slot || slot.kind !== 'video' || !slot.ready || !slot.vidEl) return false
+    if (!slot || slot.kind !== 'video' || !slot.vidEl) return false
     const vid = slot.vidEl
     if (vid.readyState < 2) return false
     const vw = vid.videoWidth, vh = vid.videoHeight
     if (!vw || !vh) return false
+    if (vid.paused) vid.play().catch(_ => {})
     ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H)
     const s = Math.min(W / vw, H / vh) * IDV.adjZoom
     const dw = vw * s, dh = vh * s
@@ -428,8 +474,7 @@ if (_origGUM) {
                        constraints.video.facingMode?.ideal === 'user')
     if (wantsUser) {
       IDV.phase = 'selfie'; ssSet('__idv_phase__', 'selfie')
-      const s = getActiveSelfieSlot()
-      if (s?.kind === 'video' && s.vidEl) startSelfieVideo(s.vidEl)
+      activateSelfieSource()
     } else {
       IDV.phase = 'id'; IDV.idStep = 0; ssSet('__idv_phase__', 'id')
     }
@@ -631,9 +676,7 @@ function checkDOM() {
     IDV.phase = 'selfie'; ssSet('__idv_phase__', 'selfie')
     const a = PHASE_ADJ.selfie; IDV.adjZoom = a.zoom; IDV.adjOffX = a.offX; IDV.adjOffY = a.offY
     window.postMessage({ _idv: 'IDV_PHASE_REQUEST', phase: 'selfie' }, '*')
-    const slot = getActiveSelfieSlot()
-    if (slot?.kind === 'video' && slot.vidEl) startSelfieVideo(slot.vidEl)
-    else loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
+    activateSelfieSource()
   }
   if (ADVANCE_W.some(w => txt.includes(w))) {
     clearTimeout(_autoClickTimer)
