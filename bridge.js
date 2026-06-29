@@ -77,6 +77,11 @@ window.addEventListener('message', ev => {
   if (d?._idv === 'IDV_VERIFY_FAILED') {
     chrome.runtime.sendMessage({ type: 'IDV_VERIFY_FAILED', store: d.store, reason: d.reason, href: d.href }).catch(() => {})
   }
+
+  if (d?._idv === 'GQL_CONTEXT') {
+    // Store GQL URL + CSRF so background-injected scripts can use them
+    chrome.storage.local.set({ __idvGqlUrl: d.url, __idvGqlCsrf: d.csrf }).catch(() => {})
+  }
 })
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {

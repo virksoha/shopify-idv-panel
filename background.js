@@ -299,9 +299,11 @@ async function triggerPollNow(store, restrictionId) {
           verifications { id status type requirement updatedAt }
         }
       }`
-      fetch('https://admin.shopify.com/api/shopify/graphql.json', {
+      const gqlUrl = window.__idvGqlUrl || (()=>{ const s=location.pathname.match(/\/store\/([^/?#]+)/)?.[1]; return s?`https://admin.shopify.com/store/${s}/api/shopify/graphql.json`:'https://admin.shopify.com/api/shopify/graphql.json' })()
+      const csrf   = window.__idvGqlCsrf || document.querySelector('meta[name="csrf-token"]')?.content || window?.Shopify?.csrfToken || ''
+      fetch(gqlUrl, {
         method: 'POST', credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(csrf ? {'X-CSRF-Token': csrf} : {}) },
         body: JSON.stringify({ query: q })
       }).then(r => r.json()).then(data => {
         window.postMessage({ _idv: 'POLL_RESULT', store, data }, '*')
@@ -339,16 +341,14 @@ async function injectFallbackPGRR(tabId, restrictionId) {
       target: { tabId },
       world: 'MAIN',
       func: async (rid) => {
-        const csrf = document.querySelector('meta[name="csrf-token"]')?.content || window.Shopify?.csrfToken || ''
-        const store = window.location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
-        const hdrs = { 'Content-Type': 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) }
-        const gqlUrls = store
-          ? [`https://admin.shopify.com/store/${store}/api/shopify/graphql.json`, 'https://admin.shopify.com/api/shopify/graphql.json']
-          : ['https://admin.shopify.com/api/shopify/graphql.json']
+        // Use GQL URL/CSRF from page's own intercepted calls — most reliable
+        const gqlUrl = window.__idvGqlUrl || (()=>{ const s=location.pathname.match(/\/store\/([^/?#]+)/)?.[1]; return s?`https://admin.shopify.com/store/${s}/api/shopify/graphql.json`:'https://admin.shopify.com/api/shopify/graphql.json' })()
+        const csrf   = window.__idvGqlCsrf || document.querySelector('meta[name="csrf-token"]')?.content || window?.Shopify?.csrfToken || ''
+        const hdrs   = { 'Content-Type': 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) }
         const mut1 = `mutation M1($id:ID!){remediateRiskRestriction(input:{riskRestrictionId:$id}){challengeToken userErrors{field message}}}`
         const mut2 = `mutation PGRR($id:ID!){payoutGateRemediate(input:{riskRestrictionGid:$id}){challengeToken userErrors{field message}}}`
         async function tryGql(query) {
-          for (const url of gqlUrls) {
+          for (const url of [gqlUrl, 'https://admin.shopify.com/api/shopify/graphql.json']) {
             try {
               const res = await fetch(url, { method:'POST', credentials:'include', headers:hdrs, body: JSON.stringify({ query, variables:{ id: rid } }) })
               const ct = res.headers.get('content-type') || ''
@@ -418,15 +418,12 @@ async function injectDiscovery(store) {
       world: 'MAIN',
       func: async () => {
         const q = `query IDVDiscover{shopifyPaymentsAccount{bankAccount{id riskRestrictions{id status type reason}}}}`
-        const csrf = document.querySelector('meta[name="csrf-token"]')?.content || window?.Shopify?.csrfToken || ''
-        const hdrs = { 'Content-Type':'application/json', ...(csrf ? {'X-CSRF-Token':csrf} : {}) }
-        const store = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
-        // Try store-specific URL first (works on account_review), then global
-        const urls = store
-          ? [`https://admin.shopify.com/store/${store}/api/shopify/graphql.json`, 'https://admin.shopify.com/api/shopify/graphql.json']
-          : ['https://admin.shopify.com/api/shopify/graphql.json']
+        // Use GQL URL/CSRF captured from page's own calls — most reliable
+        const gqlUrl = window.__idvGqlUrl || (()=>{ const s=location.pathname.match(/\/store\/([^/?#]+)/)?.[1]; return s?`https://admin.shopify.com/store/${s}/api/shopify/graphql.json`:'https://admin.shopify.com/api/shopify/graphql.json' })()
+        const csrf   = window.__idvGqlCsrf || document.querySelector('meta[name="csrf-token"]')?.content || window?.Shopify?.csrfToken || ''
+        const hdrs   = { 'Content-Type':'application/json', ...(csrf ? {'X-CSRF-Token':csrf} : {}) }
         let data
-        for (const url of urls) {
+        for (const url of [gqlUrl, 'https://admin.shopify.com/api/shopify/graphql.json']) {
           try {
             const res = await fetch(url, { method:'POST', credentials:'include', headers:hdrs, body: JSON.stringify({ query: q }) })
             const ct = res.headers.get('content-type') || ''
@@ -510,13 +507,12 @@ async function backendVerifyCheck(store) {
       target: { tabId: adminTab.id },
       world: 'MAIN',
       func: async () => {
-        const csrf = document.querySelector('meta[name="csrf-token"]')?.content || window?.Shopify?.csrfToken || ''
-        const hdrs = { 'Content-Type': 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) }
-        const store = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
-        // Try store-specific GQL URL first (works on account_review), then global
-        const gqlUrls = store
-          ? [`https://admin.shopify.com/store/${store}/api/shopify/graphql.json`, 'https://admin.shopify.com/api/shopify/graphql.json']
-          : ['https://admin.shopify.com/api/shopify/graphql.json']
+        // Use GQL URL/CSRF captured from page's own calls — guaranteed to work
+        const gqlUrl = window.__idvGqlUrl || (()=>{ const s=location.pathname.match(/\/store\/([^/?#]+)/)?.[1]; return s?`https://admin.shopify.com/store/${s}/api/shopify/graphql.json`:'https://admin.shopify.com/api/shopify/graphql.json' })()
+        const csrf   = window.__idvGqlCsrf || document.querySelector('meta[name="csrf-token"]')?.content || window?.Shopify?.csrfToken || ''
+        const hdrs   = { 'Content-Type': 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) }
+        const store  = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
+        const gqlUrls = [gqlUrl, 'https://admin.shopify.com/api/shopify/graphql.json']
 
         // Deep query: restriction details + verification sessions + identity verification
         const q = `query IDVBackendCheck {
@@ -639,7 +635,7 @@ async function backendVerifyCheck(store) {
           // Fallback: simpler query trying all URL options
           try {
             let d2
-            for (const gqlUrl of gqlUrls) {
+            for (const gqlUrl of [gqlUrl, 'https://admin.shopify.com/api/shopify/graphql.json']) {
               try {
                 const r2 = await fetch(gqlUrl, {
                   method: 'POST', credentials: 'include', headers: hdrs,
