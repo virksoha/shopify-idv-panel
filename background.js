@@ -507,8 +507,10 @@ async function autoOrchestrate(store) {
       window._verifyLinkClicked = false
 
       // A) "Verify your identity" modal is already open → click Start immediately
+      // Use getBoundingClientRect — offsetParent is null for fixed-position modals
+      const vis = el => { try { const r=el.getBoundingClientRect(); return r.width>0&&r.height>0&&!el.disabled } catch(_){return false} }
       const startBtn = [...document.querySelectorAll('button,[role="button"]')]
-        .find(b => /^(start|begin|verify now|start verification|start identity|continue|get started)$/i.test((b.textContent||'').trim()) && !b.disabled && b.offsetParent)
+        .find(b => /^(start|begin|verify now|start verification|start identity|continue|get started)$/i.test((b.textContent||'').trim()) && vis(b))
       if (startBtn) {
         startBtn.click()
         window.postMessage({ _idv: 'UI_ACTION', action: 'start_clicked' }, '*')
@@ -553,12 +555,20 @@ async function backendVerifyCheck(store) {
       target: { tabId: adminTab.id },
       world: 'MAIN',
       func: async () => {
+        // Wait for the page to capture its own GQL context (URL + CSRF) — up to 8s
+        if (!window.__idvGqlReady) {
+          await new Promise(resolve => {
+            const t = setTimeout(resolve, 8000)
+            const iv = setInterval(() => { if (window.__idvGqlReady) { clearInterval(iv); clearTimeout(t); resolve() } }, 200)
+          })
+        }
         // Use GQL URL/CSRF captured from page's own calls — guaranteed to work
-        const gqlUrl = window.__idvGqlUrl || (()=>{ const s=location.pathname.match(/\/store\/([^/?#]+)/)?.[1]; return s?`https://admin.shopify.com/store/${s}/api/shopify/graphql.json`:'https://admin.shopify.com/api/shopify/graphql.json' })()
+        const s0     = location.pathname.match(/\/store\/([^/?#]+)/)?.[1]
+        const gqlUrl = window.__idvGqlUrl || (s0 ? `https://admin.shopify.com/store/${s0}/api/shopify/graphql.json` : 'https://admin.shopify.com/api/shopify/graphql.json')
         const csrf   = window.__idvGqlCsrf || document.querySelector('meta[name="csrf-token"]')?.content || window?.Shopify?.csrfToken || ''
         const hdrs   = { 'Content-Type': 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) }
-        const store  = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
-        const gqlUrls = [gqlUrl, 'https://admin.shopify.com/api/shopify/graphql.json']
+        const store  = s0 || null
+        const gqlUrls = [gqlUrl, ...(s0 ? [`https://admin.shopify.com/store/${s0}/api/shopify/graphql.json`] : []), 'https://admin.shopify.com/api/shopify/graphql.json']
 
         // Deep query: restriction details + verification sessions + identity verification
         const q = `query IDVBackendCheck {

@@ -1066,10 +1066,10 @@ function autoClickStartIfNeeded(txt) {
                  || txt.includes('stripe') && txt.includes('identity')
   if (!hasVerify) return
 
-  // Find visible Start button
+  // Find visible Start button — use getBoundingClientRect since fixed-position modals have offsetParent=null
+  const isVisible = el => { try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !el.disabled } catch(_) { return false } }
   const startBtn = [...document.querySelectorAll('button,[role="button"]')]
-    .find(b => /^(start|begin|get started|start verification|verify now)$/i.test((b.textContent||'').trim())
-            && !b.disabled && b.offsetParent !== null)
+    .find(b => /^(start|begin|get started|start verification|verify now|continue)$/i.test((b.textContent||'').trim()) && isVisible(b))
   if (!startBtn) return
 
   // Debounce: don't click same button twice within 8s
