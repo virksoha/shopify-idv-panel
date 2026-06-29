@@ -128,6 +128,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     broadcastToSidePanel({ type: 'STRIPE_STATUS_UPDATE', status: msg.status, step: msg.step })
     return true
   }
+
+  if (msg.type === 'STRIPE_MODAL_DETECTED') {
+    broadcastToSidePanel({ type: 'STRIPE_MODAL_DETECTED', store: msg.store, href: msg.href })
+    notify('modal_' + (msg.store || 'x'), '🔔 Verify Identity popup!', `Store ${msg.store || ''} — Click Start on Shopify or use Force Verify`)
+    return true
+  }
 })
 
 // ── Session storage ────────────────────────────────────────────────────────────

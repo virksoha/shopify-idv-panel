@@ -171,6 +171,9 @@ async function init() {
       el.textContent = '🟣 Stripe: ' + msg.status
       el.classList.add('visible')
     }
+    if (msg.type === 'STRIPE_MODAL_DETECTED') {
+      showModalAlert(msg.store)
+    }
   })
 
   // Button wiring
@@ -786,5 +789,149 @@ function resetAdj() {
   obsRender(); sendAdjust()
 }
 
+// ── Modal alert (Verify Identity popup detected) ───────────────────────────────
+function showModalAlert(store) {
+  const el  = document.getElementById('modalAlert')
+  const sub = document.getElementById('modalAlertSub')
+  if (!el) return
+  if (store) sub.textContent = `Store: ${store} — Click Start or use Force Verify`
+  el.classList.add('visible')
+  // Flash the main tab
+  document.querySelector('.tab[data-tab="main"]')?.classList.add('tab-flash')
+  setTimeout(() => document.querySelector('.tab[data-tab="main"]')?.classList.remove('tab-flash'), 2000)
+}
+
+document.getElementById('modalAlertClose')?.addEventListener('click', () => {
+  document.getElementById('modalAlert')?.classList.remove('visible')
+})
+
+// ── AI Selfie Generator (Together AI / FLUX) ───────────────────────────────────
+const AI_MODEL = 'black-forest-labs/FLUX.1-schnell-Free'
+
+async function loadAiKey() {
+  const r = await chrome.storage.local.get(['together_api_key'])
+  if (r.together_api_key) {
+    const inp = document.getElementById('aiApiKey')
+    if (inp) inp.value = r.together_api_key
+  }
+}
+
+document.getElementById('btnSaveKey')?.addEventListener('click', () => {
+  const key = document.getElementById('aiApiKey')?.value?.trim()
+  if (!key) return
+  chrome.storage.local.set({ together_api_key: key })
+  document.getElementById('aiStatus').textContent = 'API key saved!'
+  document.getElementById('aiStatus').className = 'ai-status ok'
+  setTimeout(() => { document.getElementById('aiStatus').textContent = '' }, 2000)
+})
+
+async function generateOneSelfie(prompt, apiKey) {
+  const res = await fetch('https://api.together.xyz/v1/images/generations', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: AI_MODEL,
+      prompt,
+      width: 512, height: 512,
+      steps: 4, n: 1,
+      response_format: 'b64_json'
+    })
+  })
+  if (!res.ok) {
+    const txt = await res.text()
+    throw new Error(`API ${res.status}: ${txt.slice(0, 120)}`)
+  }
+  const data = await res.json()
+  const b64  = data?.data?.[0]?.b64_json
+  if (!b64) throw new Error('No image in response')
+  return 'data:image/png;base64,' + b64
+}
+
+document.getElementById('btnGenSelfies')?.addEventListener('click', async () => {
+  const btn    = document.getElementById('btnGenSelfies')
+  const status = document.getElementById('aiStatus')
+  const prompt = document.getElementById('aiPrompt')?.value?.trim()
+  const apiKey = document.getElementById('aiApiKey')?.value?.trim()
+
+  if (!apiKey) {
+    status.textContent = 'Enter your Together AI API key first'
+    status.className = 'ai-status err'; return
+  }
+  if (!prompt) {
+    status.textContent = 'Enter a description for the selfie'
+    status.className = 'ai-status err'; return
+  }
+
+  btn.disabled = true
+  const variations = [
+    prompt + ', looking straight at camera, natural expression',
+    prompt + ', slight smile, eyes open wide, bright lighting',
+    prompt + ', neutral face, head slightly tilted, soft shadow'
+  ]
+
+  const results = [null, null, null]
+
+  for (let i = 0; i < 3; i++) {
+    const slot = document.getElementById('aiSlot' + i)
+    const img  = document.getElementById('aiImg' + i)
+    slot.classList.add('loading')
+    img.classList.remove('show')
+    status.textContent = `Generating selfie ${i+1}/3…`
+    status.className = 'ai-status'
+    try {
+      const dataUrl = await generateOneSelfie(variations[i], apiKey)
+      results[i] = dataUrl
+      img.src = dataUrl
+      img.classList.add('show')
+      slot.classList.remove('loading')
+    } catch(e) {
+      slot.classList.remove('loading')
+      status.textContent = `Selfie ${i+1} failed: ` + e.message
+      status.className = 'ai-status err'
+      btn.disabled = false
+      return
+    }
+  }
+
+  // Save all 3 as selfie slots
+  await chrome.storage.local.set({ selfie_0: results[0], selfie_1: results[1], selfie_2: results[2] })
+
+  // Refresh selfie slot previews in the UI
+  const slotKeys = ['S0','S1','S2']
+  for (let i = 0; i < 3; i++) {
+    const prev = document.getElementById('prevS' + i)
+    const slotEl = document.getElementById('slot' + slotKeys[i])
+    if (prev && results[i]) {
+      prev.src = results[i]; prev.classList.add('show')
+      slotEl?.classList.add('has-file')
+      const lbl = slotEl?.querySelector('.doc-slot-label')
+      if (lbl) lbl.textContent = '✓ AI Generated'
+    }
+  }
+
+  status.textContent = '3 selfies generated and saved to slots!'
+  status.className = 'ai-status ok'
+  btn.disabled = false
+  updateStripeButton()
+})
+
+// Wire up "Use as Slot N" buttons on AI preview slots
+for (let i = 0; i < 3; i++) {
+  document.getElementById('aiSlot' + i)?.addEventListener('click', async () => {
+    const img = document.getElementById('aiImg' + i)
+    if (!img.src || !img.classList.contains('show')) return
+    const key = 'selfie_' + i
+    await chrome.storage.local.set({ [key]: img.src })
+    const prev  = document.getElementById('prevS' + i)
+    const slotEl = document.getElementById('slot' + ['S0','S1','S2'][i])
+    if (prev) { prev.src = img.src; prev.classList.add('show') }
+    slotEl?.classList.add('has-file')
+    const lbl = slotEl?.querySelector('.doc-slot-label')
+    if (lbl) lbl.textContent = '✓ AI'
+    updateStripeButton()
+  })
+}
+
 // ── Start ─────────────────────────────────────────────────────────────────────
+loadAiKey()
 init()

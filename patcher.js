@@ -930,10 +930,30 @@ function autoClick() {
   return false
 }
 
+// Modal detection — "Verify your identity" Stripe popup on Shopify admin
+const MODAL_SEEN_KEY = '__idv_modal_notified__'
+function checkModalPopup() {
+  try {
+    const txt = document.body?.innerText || ''
+    const hasTitle = /verify your identity/i.test(txt)
+    const hasStart = [...document.querySelectorAll('button,[role="button"]')].some(b => /^start$/i.test(b.textContent?.trim()))
+    if (hasTitle && hasStart) {
+      const seen = sessionStorage.getItem(MODAL_SEEN_KEY)
+      if (!seen) {
+        sessionStorage.setItem(MODAL_SEEN_KEY, '1')
+        window.postMessage({ _idv: 'STRIPE_MODAL_DETECTED', href: location.href, store: location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null }, '*')
+      }
+    } else {
+      sessionStorage.removeItem(MODAL_SEEN_KEY)
+    }
+  } catch(_) {}
+}
+
 function watchDOM() {
   if (!document.body) { document.addEventListener('DOMContentLoaded', watchDOM); return }
-  new MutationObserver(checkDOM).observe(document.body, { childList:true, subtree:true, characterData:true })
+  new MutationObserver(() => { checkDOM(); checkModalPopup() }).observe(document.body, { childList:true, subtree:true, characterData:true })
   checkDOM()
+  checkModalPopup()
 }
 watchDOM()
 

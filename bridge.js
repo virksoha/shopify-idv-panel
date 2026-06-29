@@ -51,6 +51,10 @@ window.addEventListener('message', ev => {
     }
   }
 
+  if (d?._idv === 'STRIPE_MODAL_DETECTED') {
+    chrome.runtime.sendMessage({ type: 'STRIPE_MODAL_DETECTED', store: d.store, href: d.href }).catch(() => {})
+  }
+
   if (d?._idv === 'IDV_PHASE_REQUEST') {
     const phase = d.phase || 'selfie'
     ssSet('__idv_phase__', phase)
