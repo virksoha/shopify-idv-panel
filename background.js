@@ -494,18 +494,25 @@ async function autoOrchestrate(store) {
 
       // A) "Verify your identity" modal is already open → click Start immediately
       const startBtn = [...document.querySelectorAll('button,[role="button"]')]
-        .find(b => /^(start|begin|verify now)$/i.test((b.textContent||'').trim()) && !b.disabled && b.offsetParent)
+        .find(b => /^(start|begin|verify now|start verification|start identity|continue|get started)$/i.test((b.textContent||'').trim()) && !b.disabled && b.offsetParent)
       if (startBtn) {
         startBtn.click()
         window.postMessage({ _idv: 'UI_ACTION', action: 'start_clicked' }, '*')
         return
       }
 
-      // B) account_review page → click "ID verification" task row
+      // B) account_review page → click innermost element that starts with "ID verification"
       if (path.includes('account_review') || path.includes('account-review')) {
-        const idvRow = [...document.querySelectorAll('a,[role="link"],[role="button"],button,li,div')]
-          .find(el => /^id verification/i.test((el.textContent||'').trim()) && el.offsetParent)
+        // Find all elements, pick the most specific (smallest) one whose text starts with "ID verification"
+        const candidates = [...document.querySelectorAll('a,[role="link"],[role="button"],button,li,p,span,h2,h3')]
+          .filter(el => /^id verification/i.test((el.textContent||'').trim()) && el.offsetParent)
+        // Sort by text length ascending → pick most specific match
+        const idvRow = candidates.sort((a,b) => (a.textContent||'').length - (b.textContent||'').length)[0]
         if (idvRow) { idvRow.click(); return }
+        // Fallback: find any clickable ancestor that contains "ID verification" text
+        const idvContainer = [...document.querySelectorAll('[class*="task"],[class*="Task"],[class*="item"],[class*="Item"],[class*="card"],[class*="Card"]')]
+          .find(el => /id verification/i.test(el.textContent||'') && el.offsetParent)
+        if (idvContainer) { idvContainer.click(); return }
       }
 
       // C) balance/payments page → click "verify your identity" link

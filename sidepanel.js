@@ -556,43 +556,73 @@ async function doForceVerify() {
 
   chrome.runtime.sendMessage({ type: 'AUTO_ORCHESTRATE', store: currentStore })
 
-  // Wait up to 20s for JWT to arrive via CAPTURE event
+  // Wait up to 60s for JWT to arrive (click → modal → Start → Stripe → JWT can take 30–50s)
+  // Re-fire AUTO_ORCHESTRATE every 15s in case modal closed or click missed
   let waited = 0
+  const reFireOrch = setInterval(() => {
+    chrome.runtime.sendMessage({ type: 'AUTO_ORCHESTRATE', store: currentStore })
+  }, 15000)
   const checkJwt = setInterval(async () => {
     waited += 2000
-    const sess = await new Promise(resolve =>
-      chrome.runtime.sendMessage({ type: 'GET_SESSION', store: currentStore }, r => resolve(r?.session))
-    )
+    const sess = await new Promise(resolve => {
+      try {
+        chrome.runtime.sendMessage({ type: 'GET_SESSION', store: currentStore }, r => {
+          if (chrome.runtime.lastError) { resolve(null); return }
+          resolve(r?.session)
+        })
+      } catch (_) { resolve(null) }
+    })
     const jwt = sess?.state?.jwt
     if (jwt) {
-      clearInterval(checkJwt)
+      clearInterval(checkJwt); clearInterval(reFireOrch)
       btn.textContent = '✓ JWT captured! Opening Stripe…'
       btn.className = 'btn-force visible success'
       showAutoBar('jwt_ok', '🔑 JWT captured! Stripe opening automatically...')
       setTimeout(() => render(), 800)
-    } else if (waited >= 20000) {
-      clearInterval(checkJwt)
-      // Fallback: try direct PGRR with restriction ID if we have one
+    } else if (waited >= 60000) {
+      clearInterval(checkJwt); clearInterval(reFireOrch)
+      // Fallback: try direct PGRR with restriction ID if Discovery already ran
       const state = sess?.state || {}
       const rid = state.active_restriction_gid || state.active_restriction_id
       if (rid) {
         btn.textContent = '⬡ Trying direct PGRR...'
         chrome.runtime.sendMessage({ type: 'FORCE_VERIFY', riskRestrictionId: rid }, res => {
-          if (res?.ok) {
-            btn.textContent = '✓ JWT captured!'
-            btn.className = 'btn-force visible success'
-          } else {
+          if (chrome.runtime.lastError || !res?.ok) {
             btn.textContent = '▶ Force Verify'
             btn.className = 'btn-force visible'
-            errDiv.textContent = '⚠️ Auto-click may have missed — try clicking "ID Verification" task manually on Shopify, then come back here.'
+            errDiv.textContent = '⚠️ Click "ID Verification" row on Shopify page manually, then press Force Verify again.'
             errDiv.className = 'force-error visible'
+          } else {
+            btn.textContent = '✓ JWT captured!'
+            btn.className = 'btn-force visible success'
           }
         })
       } else {
-        btn.textContent = '▶ Force Verify'
-        btn.className = 'btn-force visible'
-        errDiv.textContent = '⚠️ Navigate to account_review page and let it load fully, then try again.'
-        errDiv.className = 'force-error visible'
+        // Run Discovery first to get restriction ID, then retry
+        btn.textContent = '🔍 Running Discovery...'
+        chrome.runtime.sendMessage({ type: 'DISCOVER', store: currentStore }, res => {
+          if (chrome.runtime.lastError) { /* sw restarted */ }
+          const newRid = res?.restrictionId
+          if (newRid) {
+            btn.textContent = '⬡ Trying direct PGRR...'
+            chrome.runtime.sendMessage({ type: 'FORCE_VERIFY', riskRestrictionId: newRid }, res2 => {
+              if (chrome.runtime.lastError || !res2?.ok) {
+                btn.textContent = '▶ Force Verify'
+                btn.className = 'btn-force visible'
+                errDiv.textContent = '⚠️ Click "ID Verification" row on Shopify page manually, then press Force Verify again.'
+                errDiv.className = 'force-error visible'
+              } else {
+                btn.textContent = '✓ JWT captured!'
+                btn.className = 'btn-force visible success'
+              }
+            })
+          } else {
+            btn.textContent = '▶ Force Verify'
+            btn.className = 'btn-force visible'
+            errDiv.textContent = '⚠️ Click "ID Verification" row on Shopify page manually, then press Force Verify again.'
+            errDiv.className = 'force-error visible'
+          }
+        })
       }
     }
   }, 2000)
