@@ -274,6 +274,66 @@ function detectCameraSize() {
   return { w: 1280, h: 720 }
 }
 
+// ── Face detection via skin-tone clustering (no external libs) ────────────────
+function detectFaceBounds(img) {
+  try {
+    const maxW = 200
+    const scale = Math.min(1, maxW / img.naturalWidth)
+    const w = Math.round(img.naturalWidth * scale)
+    const h = Math.round(img.naturalHeight * scale)
+    const c = document.createElement('canvas')
+    c.width = w; c.height = h
+    const ctx = c.getContext('2d')
+    ctx.drawImage(img, 0, 0, w, h)
+    const d = ctx.getImageData(0, 0, w, h).data
+    let minX = w, maxX = 0, minY = h, maxY = 0, count = 0
+    // Skin tone heuristic (RGB-based, works for most skin types)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4
+        const r = d[i], g = d[i+1], b = d[i+2]
+        const isSkin = r > 95 && g > 40 && b > 20 &&
+                       r > g && r > b &&
+                       Math.abs(r - g) > 15 &&
+                       (Math.max(r,g,b) - Math.min(r,g,b)) > 15
+        if (isSkin) {
+          if (x < minX) minX = x
+          if (x > maxX) maxX = x
+          if (y < minY) minY = y
+          if (y > maxY) maxY = y
+          count++
+        }
+      }
+    }
+    if (count < 50 || maxX - minX < 20 || maxY - minY < 20) return null
+    // Convert back to original image coordinates
+    return {
+      x:  minX / scale,
+      y:  minY / scale,
+      w:  (maxX - minX) / scale,
+      h:  (maxY - minY) / scale,
+      cx: ((minX + maxX) / 2) / scale,
+      cy: ((minY + maxY) / 2) / scale
+    }
+  } catch(_) { return null }
+}
+
+// Estimate eye + mouth positions from face bounds
+function estimateFacePoints(bounds) {
+  if (!bounds) return null
+  return {
+    eyeY:   bounds.y + bounds.h * 0.38,
+    eyeXL:  bounds.cx - bounds.w * 0.18,
+    eyeXR:  bounds.cx + bounds.w * 0.18,
+    eyeW:   bounds.w * 0.12,
+    eyeH:   bounds.h * 0.04,
+    mouthY: bounds.y + bounds.h * 0.78,
+    mouthX: bounds.cx,
+    mouthW: bounds.w * 0.28,
+    mouthH: bounds.h * 0.06
+  }
+}
+
 // ── Image auto-enhancement (brightness/contrast normalization) ────────────────
 function autoEnhance(img) {
   try {
@@ -476,31 +536,67 @@ async function buildFakeStream(src) {
       const yawDeg = livenessYaw(elapsed)
       const yawRad = yawDeg * Math.PI / 180
       const xScale = Math.cos(yawRad)
-      // Subtle pitch (head nod) — sinusoidal, smaller amplitude
       const pitch = Math.sin(elapsed / 2200) * 4
-      // Breathing motion — very small vertical shift
       const breath = Math.sin(elapsed / 1900) * 3
       const yShift = Math.abs(yawDeg) * 0.6 + breath
       const iw = ci.naturalWidth * s, ih = ci.naturalHeight * s
+
+      // Detect face bounds once per image (cached on the img object)
+      if (!ci._faceBounds && ci._faceBounds !== false) {
+        ci._faceBounds = detectFaceBounds(ci) || false
+      }
+      const facePts = ci._faceBounds ? estimateFacePoints(ci._faceBounds) : null
+
       ctx.save()
       ctx.translate(W/2 + IDV.adjOffX, H/2 + IDV.adjOffY - yShift)
       if (IDV.mirror) ctx.scale(-xScale, 1)
       else            ctx.scale(xScale, 1)
-      // Apply pitch as small Y skew
       ctx.transform(1, pitch * 0.003, 0, 1, 0, 0)
       ctx.drawImage(ci, -iw/2 + ox, -ih/2 + oy, iw, ih)
       ctx.restore()
-      // Eye blink overlay — every ~3.5s, very brief (120ms)
+
+      // Eye blink overlay — every ~3.5s, brief (100ms)
       const blinkCycle = elapsed % 3500
-      if (blinkCycle > 3400) {
-        // Estimate eye y position (top 38% of face area, which is center of frame)
-        const eyeY = H/2 + IDV.adjOffY - ih * 0.12
+      if (blinkCycle > 3400 && facePts) {
+        // Convert face pixel coords to canvas pixel coords
+        const cscale = s * (IDV.mirror ? -xScale : xScale)
+        // Eye left position relative to img center
+        const relEyeX_L = (facePts.eyeXL - ci.naturalWidth/2)
+        const relEyeX_R = (facePts.eyeXR - ci.naturalWidth/2)
+        const relEyeY   = (facePts.eyeY  - ci.naturalHeight/2)
+        const ex_L = W/2 + IDV.adjOffX + relEyeX_L * cscale + ox * (IDV.mirror ? -xScale : xScale)
+        const ex_R = W/2 + IDV.adjOffX + relEyeX_R * cscale + ox * (IDV.mirror ? -xScale : xScale)
+        const ey   = H/2 + IDV.adjOffY - yShift + relEyeY * s
+        const ew = facePts.eyeW * Math.abs(cscale) * 1.3
+        const eh = facePts.eyeH * s * 1.5
+        ctx.fillStyle = 'rgba(110, 80, 70, 0.65)'
+        ctx.fillRect(ex_L - ew/2, ey - eh/2, ew, eh)
+        ctx.fillRect(ex_R - ew/2, ey - eh/2, ew, eh)
+      } else if (blinkCycle > 3400 && !facePts) {
+        // Fallback: estimated eye position based on center
+        const eyeY = H/2 + IDV.adjOffY - ih * 0.10
         const eyeXL = W/2 + IDV.adjOffX - iw * 0.10
         const eyeXR = W/2 + IDV.adjOffX + iw * 0.10
-        const eyeW = iw * 0.08, eyeH = ih * 0.015
+        const ew = iw * 0.08, eh = ih * 0.015
         ctx.fillStyle = 'rgba(110, 80, 70, 0.55)'
-        ctx.fillRect(eyeXL - eyeW/2, eyeY - eyeH/2, eyeW, eyeH)
-        ctx.fillRect(eyeXR - eyeW/2, eyeY - eyeH/2, eyeW, eyeH)
+        ctx.fillRect(eyeXL - ew/2, eyeY - eh/2, ew, eh)
+        ctx.fillRect(eyeXR - ew/2, eyeY - eh/2, ew, eh)
+      }
+
+      // Subtle mouth movement — micro shadow (only when face detected)
+      if (facePts) {
+        const mouthOpen = Math.sin(elapsed / 800) * 0.5 + 0.5
+        if (mouthOpen > 0.7) {
+          const cscale = s * (IDV.mirror ? -xScale : xScale)
+          const relMX = (facePts.mouthX - ci.naturalWidth/2)
+          const relMY = (facePts.mouthY - ci.naturalHeight/2)
+          const mx = W/2 + IDV.adjOffX + relMX * cscale
+          const my = H/2 + IDV.adjOffY - yShift + relMY * s
+          const mw = facePts.mouthW * Math.abs(cscale) * 0.5
+          const mh = facePts.mouthH * s * 0.3
+          ctx.fillStyle = 'rgba(40, 20, 20, 0.18)'
+          ctx.fillRect(mx - mw/2, my, mw, mh)
+        }
       }
     } else {
       ctx.drawImage(ci,
