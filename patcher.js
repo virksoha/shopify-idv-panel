@@ -931,43 +931,94 @@ function checkDOM() {
 
   // End of flow: "Submit for review" — only if 100% confident
   if (txt.includes('submit for review') || txt.includes('complete these tasks to continue')) {
-    const tasksOk = isReadyToSubmit(txt)
-    window.postMessage({ _idv: 'SUBMIT_CONFIDENCE', ready: tasksOk && _captured.front && _captured.back && _captured.selfie, captured: {..._captured, tasks: tasksOk} }, '*')
-    if (tasksOk && _captured.front && _captured.back && _captured.selfie) {
+    const { tasksDone, taskStates } = scanShopifyTasks()
+    const noErrors = !FAIL_PHRASES.some(p => txt.includes(p)) && !document.querySelector('[data-incomplete="true"],[aria-invalid="true"]')
+    const allPhotos = _captured.front && _captured.back && _captured.selfie
+    const ready = noErrors && tasksDone && allPhotos
+    window.postMessage({ _idv: 'SUBMIT_CONFIDENCE', ready, captured: {..._captured, tasks: tasksDone}, taskStates }, '*')
+    if (ready) {
       clearTimeout(_autoClickTimer)
       _autoClickTimer = setTimeout(() => {
-        // Double-check right before clicking
         const freshTxt = document.body?.innerText?.toLowerCase() || ''
-        if (isReadyToSubmit(freshTxt)) {
-          autoClickByText(['submit for review', 'submit'])
-        }
+        const { tasksDone: td2 } = scanShopifyTasks()
+        const noErr2 = !FAIL_PHRASES.some(p => freshTxt.includes(p))
+        if (noErr2 && td2) autoClickByText(['submit for review', 'submit'])
       }, 2000)
     }
   }
 }
 
-// Tracks which photo steps have been confirmed
+// Tracks which photo steps have been confirmed captured
 const _captured = { front: false, back: false, selfie: false }
 
-const FAIL_PHRASES = ['try again','move closer','too blurry','too dark','not detected','unable to detect','face not found','id not found','verification failed','failed','invalid','not recognized','could not verify','retake']
+const FAIL_PHRASES = ['try again','move closer','too blurry','too dark','not detected','unable to detect','face not found','id not found','verification failed','failed','invalid','not recognized','could not verify']
+
+// ── Shopify task-list scanner ──────────────────────────────────────────────────
+// Returns { tasksDone, taskStates } where taskStates = [{label, done}]
+function scanShopifyTasks() {
+  // Shopify renders tasks as list items with an icon + label.
+  // Completed tasks have a checkmark SVG or a class/aria indicating done.
+  const taskStates = []
+
+  // Strategy 1: look for polaris task/checklist list items
+  const listItems = document.querySelectorAll(
+    'li[class*="task"],li[class*="Task"],li[class*="checklist"],li[class*="Checklist"],' +
+    '[role="listitem"][class*="task"],[role="listitem"][class*="Task"],' +
+    '[data-testid*="task"],[data-testid*="Task"],[data-testid*="checklist"]'
+  )
+
+  if (listItems.length > 0) {
+    for (const item of listItems) {
+      const label = (item.textContent || '').trim().toLowerCase()
+      if (!label) continue
+      // Done indicators: checkmark SVG with title/aria, aria-checked=true, data-completed, class with done/complete/checked/success
+      const attrs = (item.getAttribute('data-status')||'') + ' ' + (item.getAttribute('data-completed')||'') + ' ' + (item.getAttribute('aria-checked')||'') + ' ' + item.className
+      const hasSVGCheck = !!item.querySelector('svg[aria-label*="omplete"],svg[aria-label*="done"],svg[aria-label*="check"],svg[title*="omplete"],svg[title*="done"],.Polaris-Icon--colorSuccess,.Polaris-Icon--colorHighlight')
+      const done = hasSVGCheck || /complete|done|checked|success/i.test(attrs)
+      taskStates.push({ label: label.slice(0, 60), done })
+    }
+  }
+
+  // Strategy 2: scan all svg icons — green/success checkmarks beside text indicate completed steps
+  if (taskStates.length === 0) {
+    const svgIcons = document.querySelectorAll('svg')
+    for (const svg of svgIcons) {
+      const parent = svg.closest('li,div[class*="task"],div[class*="Task"],div[class*="step"],div[class*="Step"]')
+      if (!parent) continue
+      const label = (parent.textContent || '').trim().toLowerCase().slice(0, 60)
+      if (!label || taskStates.find(t => t.label === label)) continue
+      const cls = svg.getAttribute('class') || ''
+      const color = svg.closest('[class*="color-success"],[class*="Success"],[class*="green"],[class*="complete"],[class*="Complete"]')
+      const done = !!color || /success|complete|done|check/i.test(cls)
+      taskStates.push({ label, done })
+    }
+  }
+
+  // Strategy 3: text-based heuristic — look for tick chars (✓ ✔ ☑) near task labels
+  if (taskStates.length === 0) {
+    const allTxt = document.body?.innerText || ''
+    const lines = allTxt.split('\n').map(l => l.trim()).filter(Boolean)
+    for (const line of lines) {
+      if (line.match(/verify|identity|selfie|government|photo|id card|passport|driver/i) && line.length < 100) {
+        const done = /[✓✔☑]/.test(line) || /complete|done|verified|passed/i.test(line)
+        taskStates.push({ label: line.toLowerCase().slice(0, 60), done })
+      }
+    }
+  }
+
+  const tasksDone = taskStates.length > 0 && taskStates.every(t => t.done)
+  return { tasksDone, taskStates }
+}
 
 function isReadyToSubmit(txt) {
   // Reject if any error/fail phrases visible
   if (FAIL_PHRASES.some(p => txt.includes(p))) return false
-  // Reject if any Shopify task-list items are incomplete
-  const hasIncomplete = document.querySelector(
-    '[data-incomplete="true"],[aria-invalid="true"],.task--incomplete,.task-incomplete,[data-status="incomplete"],[data-done="false"]'
-  )
-  if (hasIncomplete) return false
-  // Check if all visible tasks show a checkmark / complete state
-  const taskItems = document.querySelectorAll('[data-testid*="task"],[class*="task-item"],[class*="TaskItem"],[class*="checklist-item"]')
-  if (taskItems.length > 0) {
-    const allChecked = [...taskItems].every(el => {
-      const t = (el.getAttribute('data-status') || el.getAttribute('aria-checked') || el.className || '').toLowerCase()
-      return t.includes('complete') || t.includes('done') || t.includes('checked') || t.includes('success')
-    })
-    if (!allChecked) return false
-  }
+  // Reject if any Shopify explicit incomplete markers present
+  if (document.querySelector('[data-incomplete="true"],[aria-invalid="true"]')) return false
+  // Use task scanner
+  const { tasksDone, taskStates } = scanShopifyTasks()
+  // If we found tasks and not all done → not ready
+  if (taskStates.length > 0 && !tasksDone) return false
   return true
 }
 

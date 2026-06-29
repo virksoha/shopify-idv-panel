@@ -97,6 +97,8 @@
     .conf-step.fail{background:#1a0505;color:#f87171;border-color:#7f1d1d}
     .confidence-msg{font-size:10px;color:#9ca3af}
     .confidence-bar.ready .confidence-msg{color:#4ade80;font-weight:600}
+    .conf-task-row{font-size:9px;color:#6b7280;padding:1px 0}
+    .conf-task-row.done{color:#4ade80}
     .doc-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
     .doc-slot{border:1px dashed #1e293b;border-radius:6px;padding:8px;cursor:pointer;text-align:center;transition:all .15s;position:relative;background:#0a0f1e}
     .doc-slot:hover{border-color:#3b82f6;background:#030d2d}
@@ -323,6 +325,7 @@
         <span class="conf-step" id="confTasks">✅ Tasks</span>
       </div>
       <div class="confidence-msg" id="confidenceMsg">Waiting for photos...</div>
+      <div id="confTaskList" style="display:none;margin-top:5px"></div>
     </div>
 
     <div id="quickNav" style="display:none">

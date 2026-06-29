@@ -171,7 +171,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'SUBMIT_CONFIDENCE') {
-    broadcastToSidePanel({ type: 'SUBMIT_CONFIDENCE', ready: msg.ready, captured: msg.captured })
+    broadcastToSidePanel({ type: 'SUBMIT_CONFIDENCE', ready: msg.ready, captured: msg.captured, taskStates: msg.taskStates })
     return true
   }
 

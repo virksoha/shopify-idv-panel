@@ -189,7 +189,7 @@ async function init() {
       showModalAlert(msg.store, reasonMap[msg.reason] || 'Use Force Verify below')
     }
     if (msg.type === 'SUBMIT_CONFIDENCE') {
-      updateConfidenceBar(msg.ready, msg.captured)
+      updateConfidenceBar(msg.ready, msg.captured, msg.taskStates)
     }
     if (msg.type === 'PAGE_CONTEXT') {
       if (msg.store && msg.store !== currentStore) {
@@ -927,7 +927,7 @@ function showAutoBar(step, msg) {
 }
 
 // ── Submit confidence bar ──────────────────────────────────────────────────────
-function updateConfidenceBar(ready, captured) {
+function updateConfidenceBar(ready, captured, taskStates) {
   const bar = document.getElementById('confidenceBar')
   if (!bar) return
   bar.style.display = 'block'
@@ -943,11 +943,23 @@ function updateConfidenceBar(ready, captured) {
       msgEl.textContent = '✅ 100% Ready — auto-submitting now!'
     } else {
       const missing = []
-      if (!captured?.front)  missing.push('Front ID')
-      if (!captured?.back)   missing.push('Back ID')
+      if (!captured?.front)  missing.push('Front ID photo')
+      if (!captured?.back)   missing.push('Back ID photo')
       if (!captured?.selfie) missing.push('Selfie')
-      msgEl.textContent = missing.length ? '⏳ Waiting: ' + missing.join(', ') : '⚠️ Task checks incomplete'
+      if (!captured?.tasks && taskStates?.length > 0) {
+        const pendingTasks = taskStates.filter(t => !t.done).map(t => t.label.slice(0,30))
+        if (pendingTasks.length) missing.push('Tasks: ' + pendingTasks.join(', '))
+      }
+      msgEl.textContent = missing.length ? '⏳ ' + missing.join(' · ') : '⚠️ Checking...'
     }
+  }
+  // Show individual Shopify tasks if available
+  const taskListEl = document.getElementById('confTaskList')
+  if (taskListEl && taskStates?.length > 0) {
+    taskListEl.innerHTML = taskStates.map(t =>
+      `<div class="conf-task-row ${t.done ? 'done' : ''}">${t.done ? '✓' : '○'} ${t.label}</div>`
+    ).join('')
+    taskListEl.style.display = 'block'
   }
 }
 
