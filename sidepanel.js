@@ -172,7 +172,29 @@ async function init() {
       el.classList.add('visible')
     }
     if (msg.type === 'STRIPE_MODAL_DETECTED') {
-      showModalAlert(msg.store)
+      const reasonMap = {
+        popup:          'Popup detected — click Start on Shopify OR use Force Verify below',
+        account_review: 'Account Review page — use Force Verify button below',
+        flagged_page:   'Store is flagged — press Force Verify to start IDV'
+      }
+      showModalAlert(msg.store, reasonMap[msg.reason] || 'Use Force Verify below')
+    }
+    if (msg.type === 'PAGE_CONTEXT') {
+      if (msg.store && msg.store !== currentStore) {
+        currentStore = msg.store
+        render()
+      }
+      // Highlight the relevant step based on page
+      const pageHints = {
+        balance:        'Step 1: Go to Balance page — restriction data will be captured automatically',
+        account_review: 'Step 2: Click Force Verify to get the JWT token',
+        payments:       'Step 2: Go to Payments → Verify Identity section'
+      }
+      const hint = pageHints[msg.page]
+      if (hint) {
+        const el = document.getElementById('pageContextHint')
+        if (el) { el.textContent = hint; el.style.display = 'block' }
+      }
     }
   })
 
@@ -790,11 +812,11 @@ function resetAdj() {
 }
 
 // ── Modal alert (Verify Identity popup detected) ───────────────────────────────
-function showModalAlert(store) {
+function showModalAlert(store, reason) {
   const el  = document.getElementById('modalAlert')
   const sub = document.getElementById('modalAlertSub')
   if (!el) return
-  if (store) sub.textContent = `Store: ${store} — Click Start or use Force Verify`
+  sub.textContent = (store ? `Store: ${store} — ` : '') + (reason || 'Use Force Verify below')
   el.classList.add('visible')
   // Flash the main tab
   document.querySelector('.tab[data-tab="main"]')?.classList.add('tab-flash')
@@ -805,68 +827,40 @@ document.getElementById('modalAlertClose')?.addEventListener('click', () => {
   document.getElementById('modalAlert')?.classList.remove('visible')
 })
 
-// ── AI Selfie Generator (Together AI / FLUX) ───────────────────────────────────
-const AI_MODEL = 'black-forest-labs/FLUX.1-schnell-Free'
-
-async function loadAiKey() {
-  const r = await chrome.storage.local.get(['together_api_key'])
-  if (r.together_api_key) {
-    const inp = document.getElementById('aiApiKey')
-    if (inp) inp.value = r.together_api_key
-  }
-}
-
-document.getElementById('btnSaveKey')?.addEventListener('click', () => {
-  const key = document.getElementById('aiApiKey')?.value?.trim()
-  if (!key) return
-  chrome.storage.local.set({ together_api_key: key })
-  document.getElementById('aiStatus').textContent = 'API key saved!'
-  document.getElementById('aiStatus').className = 'ai-status ok'
-  setTimeout(() => { document.getElementById('aiStatus').textContent = '' }, 2000)
-})
-
-async function generateOneSelfie(prompt, apiKey) {
-  const res = await fetch('https://api.together.xyz/v1/images/generations', {
-    method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: AI_MODEL,
-      prompt,
-      width: 512, height: 512,
-      steps: 4, n: 1,
-      response_format: 'b64_json'
-    })
+// ── AI Selfie Generator (Pollinations.ai — FREE, no API key) ─────────────────
+async function generateOneSelfie(prompt, seed) {
+  const encoded = encodeURIComponent(
+    prompt + ', ultra realistic selfie photo, sharp focus, 4k, photorealistic, front facing'
+  )
+  const url = `https://image.pollinations.ai/prompt/${encoded}?width=512&height=640&nologo=true&seed=${seed}&model=flux`
+  const res = await fetch(url)
+  if (!res.ok) throw new Error('Generation failed: ' + res.status)
+  const blob = await res.blob()
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload  = () => resolve(reader.result)
+    reader.onerror = reject
+    reader.readAsDataURL(blob)
   })
-  if (!res.ok) {
-    const txt = await res.text()
-    throw new Error(`API ${res.status}: ${txt.slice(0, 120)}`)
-  }
-  const data = await res.json()
-  const b64  = data?.data?.[0]?.b64_json
-  if (!b64) throw new Error('No image in response')
-  return 'data:image/png;base64,' + b64
 }
 
 document.getElementById('btnGenSelfies')?.addEventListener('click', async () => {
   const btn    = document.getElementById('btnGenSelfies')
   const status = document.getElementById('aiStatus')
   const prompt = document.getElementById('aiPrompt')?.value?.trim()
-  const apiKey = document.getElementById('aiApiKey')?.value?.trim()
 
-  if (!apiKey) {
-    status.textContent = 'Enter your Together AI API key first'
-    status.className = 'ai-status err'; return
-  }
   if (!prompt) {
-    status.textContent = 'Enter a description for the selfie'
+    status.textContent = 'Enter a person description first'
     status.className = 'ai-status err'; return
   }
 
   btn.disabled = true
+  const basePrompt = prompt
+  const seeds = [Math.floor(Math.random()*99999), Math.floor(Math.random()*99999), Math.floor(Math.random()*99999)]
   const variations = [
-    prompt + ', looking straight at camera, natural expression',
-    prompt + ', slight smile, eyes open wide, bright lighting',
-    prompt + ', neutral face, head slightly tilted, soft shadow'
+    basePrompt + ', looking straight at camera, neutral expression',
+    basePrompt + ', slight natural smile, soft indoor lighting',
+    basePrompt + ', head slightly tilted, relaxed expression'
   ]
 
   const results = [null, null, null]
@@ -876,10 +870,10 @@ document.getElementById('btnGenSelfies')?.addEventListener('click', async () => 
     const img  = document.getElementById('aiImg' + i)
     slot.classList.add('loading')
     img.classList.remove('show')
-    status.textContent = `Generating selfie ${i+1}/3…`
+    status.textContent = `Generating selfie ${i+1}/3… (free AI, may take 10–20s)`
     status.className = 'ai-status'
     try {
-      const dataUrl = await generateOneSelfie(variations[i], apiKey)
+      const dataUrl = await generateOneSelfie(variations[i], seeds[i])
       results[i] = dataUrl
       img.src = dataUrl
       img.classList.add('show')
@@ -933,5 +927,4 @@ for (let i = 0; i < 3; i++) {
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-loadAiKey()
 init()

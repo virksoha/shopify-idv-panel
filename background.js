@@ -130,8 +130,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'STRIPE_MODAL_DETECTED') {
-    broadcastToSidePanel({ type: 'STRIPE_MODAL_DETECTED', store: msg.store, href: msg.href })
-    notify('modal_' + (msg.store || 'x'), '🔔 Verify Identity popup!', `Store ${msg.store || ''} — Click Start on Shopify or use Force Verify`)
+    broadcastToSidePanel({ type: 'STRIPE_MODAL_DETECTED', store: msg.store, href: msg.href, reason: msg.reason })
+    const reasonText = msg.reason === 'account_review' ? 'Account review page — use Force Verify'
+                     : msg.reason === 'flagged_page'   ? 'Store is flagged — start IDV flow'
+                     : 'Click Start or use Force Verify'
+    notify('modal_' + (msg.store || 'x'), '🔔 Verify Identity needed!', `Store: ${msg.store || '?'} — ${reasonText}`)
+    return true
+  }
+
+  if (msg.type === 'PAGE_CONTEXT') {
+    broadcastToSidePanel({ type: 'PAGE_CONTEXT', page: msg.page, store: msg.store })
     return true
   }
 })

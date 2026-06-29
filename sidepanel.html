@@ -237,6 +237,9 @@
       <button class="modal-alert-close" id="modalAlertClose">✕</button>
     </div>
 
+    <!-- Page context hint (auto-detected from current tab) -->
+    <div id="pageContextHint" style="display:none;font-size:10px;color:#60a5fa;background:#030d2d;border:1px solid #1d4ed8;border-radius:5px;padding:6px 10px;line-height:1.5"></div>
+
     <div class="progress-wrap" id="progressWrap" style="display:none">
       <div class="progress-header">
         <span class="progress-label">Flow progress</span>
@@ -384,13 +387,9 @@
 
     <!-- AI Selfie Generator -->
     <div class="ai-gen">
-      <div class="ai-gen-title">🤖 AI Selfie Generator <span>Together AI</span></div>
-      <div class="ai-key-row">
-        <input class="ai-key-input" id="aiApiKey" type="password" placeholder="Together AI API key (sk-…)" />
-        <button class="btn-xs" id="btnSaveKey" style="flex-shrink:0">save</button>
-      </div>
-      <textarea class="ai-prompt" id="aiPrompt" placeholder="Describe the person: e.g. 25 year old white male, brown hair, blue eyes, plain background, passport photo style, sharp focus, high quality"></textarea>
-      <button class="btn-ai-gen" id="btnGenSelfies">✨ Generate 3 Selfies</button>
+      <div class="ai-gen-title">🤖 AI Selfie Generator <span>FREE · no API key</span></div>
+      <textarea class="ai-prompt" id="aiPrompt" placeholder="Describe the person: e.g. 25 year old white male, brown hair, blue eyes, plain white background, looking at camera"></textarea>
+      <button class="btn-ai-gen" id="btnGenSelfies">✨ Generate 3 Selfies (FREE)</button>
       <div class="ai-status" id="aiStatus"></div>
       <div class="ai-previews" id="aiPreviews">
         <div class="ai-preview-slot" id="aiSlot0"><span class="ai-slot-num">1</span><img id="aiImg0" /><div class="ai-use-btn">Use as Slot 1</div></div>

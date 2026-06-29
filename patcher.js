@@ -930,22 +930,64 @@ function autoClick() {
   return false
 }
 
-// Modal detection — "Verify your identity" Stripe popup on Shopify admin
+// ── Page-level & modal detection ──────────────────────────────────────────────
 const MODAL_SEEN_KEY = '__idv_modal_notified__'
+let _modalLastFire = 0
+
+function fireModalDetected(reason) {
+  const now = Date.now()
+  if (now - _modalLastFire < 8000) return   // debounce 8s
+  _modalLastFire = now
+  const store = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
+  window.postMessage({ _idv: 'STRIPE_MODAL_DETECTED', href: location.href, store, reason }, '*')
+}
+
 function checkModalPopup() {
   try {
-    const txt = document.body?.innerText || ''
-    const hasTitle = /verify your identity/i.test(txt)
-    const hasStart = [...document.querySelectorAll('button,[role="button"]')].some(b => /^start$/i.test(b.textContent?.trim()))
-    if (hasTitle && hasStart) {
-      const seen = sessionStorage.getItem(MODAL_SEEN_KEY)
-      if (!seen) {
-        sessionStorage.setItem(MODAL_SEEN_KEY, '1')
-        window.postMessage({ _idv: 'STRIPE_MODAL_DETECTED', href: location.href, store: location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null }, '*')
-      }
-    } else {
-      sessionStorage.removeItem(MODAL_SEEN_KEY)
+    const body = document.body
+    if (!body) return
+    const txt = (body.innerText || '').toLowerCase()
+
+    // Case 1: explicit modal popup (anywhere on page)
+    const hasTitle  = txt.includes('verify your identity')
+    const hasStripe = txt.includes('stripe') && (txt.includes('keep your account secure') || txt.includes('our trusted payments partner'))
+    const hasBtn    = [...body.querySelectorAll('button,[role="button"],a')].some(b => {
+      const t = (b.textContent || '').trim().toLowerCase()
+      return t === 'start' || t === 'verify now' || t === 'begin verification'
+    })
+
+    if ((hasTitle || hasStripe) && hasBtn) {
+      fireModalDetected('popup')
+      return
     }
+
+    // Case 2: account_review page with ID verification section visible
+    const isAccountReview = /\/account.?review/i.test(location.pathname)
+    if (isAccountReview && txt.includes('id verification')) {
+      fireModalDetected('account_review')
+      return
+    }
+
+    // Case 3: flagged / restricted page with verification link
+    if (txt.includes('has been flagged') || txt.includes('payouts are on hold') || txt.includes('payouts are currently on hold')) {
+      if (txt.includes('verification') || txt.includes('verify')) {
+        fireModalDetected('flagged_page')
+      }
+    }
+  } catch(_) {}
+}
+
+// Also fire immediately on account_review pages (even before modal appears)
+function checkPageContext() {
+  try {
+    const store = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
+    if (!store) return
+    // Let sidepanel know which page we're on for context
+    const page = location.pathname.includes('account_review') ? 'account_review'
+               : location.pathname.includes('balance')        ? 'balance'
+               : location.pathname.includes('payments')       ? 'payments'
+               : null
+    if (page) window.postMessage({ _idv: 'PAGE_CONTEXT', page, store, href: location.href }, '*')
   } catch(_) {}
 }
 
@@ -954,6 +996,7 @@ function watchDOM() {
   new MutationObserver(() => { checkDOM(); checkModalPopup() }).observe(document.body, { childList:true, subtree:true, characterData:true })
   checkDOM()
   checkModalPopup()
+  setTimeout(checkPageContext, 500)
 }
 watchDOM()
 

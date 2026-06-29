@@ -52,7 +52,11 @@ window.addEventListener('message', ev => {
   }
 
   if (d?._idv === 'STRIPE_MODAL_DETECTED') {
-    chrome.runtime.sendMessage({ type: 'STRIPE_MODAL_DETECTED', store: d.store, href: d.href }).catch(() => {})
+    chrome.runtime.sendMessage({ type: 'STRIPE_MODAL_DETECTED', store: d.store, href: d.href, reason: d.reason }).catch(() => {})
+  }
+
+  if (d?._idv === 'PAGE_CONTEXT') {
+    chrome.runtime.sendMessage({ type: 'PAGE_CONTEXT', page: d.page, store: d.store, href: d.href }).catch(() => {})
   }
 
   if (d?._idv === 'IDV_PHASE_REQUEST') {
