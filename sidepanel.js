@@ -316,9 +316,16 @@ async function render() {
     badge.className = 'status-badge'
   }
 
-  // Force verify button
-  const showForce = state.active_restriction_id && !state.jwt && !isDischarged
-  document.getElementById('btnForce').className = 'btn-force' + (showForce ? ' visible' : '')
+  // Force verify button — show on any Shopify admin page even without restriction ID yet
+  const showForce = currentStore && !state.jwt && !isDischarged
+  const btnF = document.getElementById('btnForce')
+  btnF.className = 'btn-force' + (showForce ? ' visible' : '')
+  // Update button label: show "Discover + Force Verify" if no restriction ID
+  if (showForce) {
+    btnF.textContent = state.active_restriction_id
+      ? '▶ Force Verify (PGRR)'
+      : '🔍 Discover + Force Verify'
+  }
 
   // Quick nav
   document.getElementById('quickNav').style.display = hasStore ? 'block' : 'none'
@@ -337,6 +344,32 @@ async function render() {
 
   // Empty state
   document.getElementById('emptyState').style.display = (!hasStore && !hasSession) ? 'block' : 'none'
+
+  // How-to guide step highlights
+  updateGuideSteps(state)
+}
+
+function updateGuideSteps(state) {
+  const r = chrome.storage.local.get(['dl_front','dl_back'], docs => {
+    const hasDocs = !!(docs?.dl_front && docs?.dl_back)
+    const hasRid  = !!(state.active_restriction_id)
+    const hasJwt  = !!(state.jwt)
+    const hasStripe = ['processing','verified','succeeded'].includes(state.stripe_session_status)
+    const done    = !!(state.discharge_detected)
+
+    const steps = [
+      { id:'gs1', done: hasDocs,   active: !hasDocs },
+      { id:'gs2', done: hasRid,    active: hasDocs && !hasRid },
+      { id:'gs3', done: hasJwt,    active: hasRid && !hasJwt },
+      { id:'gs4', done: hasStripe, active: hasJwt && !hasStripe },
+      { id:'gs5', done: done,      active: hasStripe && !done },
+    ]
+    steps.forEach(s => {
+      const el = document.getElementById(s.id)
+      if (!el) return
+      el.className = 'guide-step' + (s.done ? ' done' : s.active ? ' active' : '')
+    })
+  })
 }
 
 function renderSteps(state) {
@@ -496,24 +529,64 @@ async function updateStripeButton() {
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 async function doForceVerify() {
-  const state  = currentSession?.state || {}
-  if (!state.active_restriction_id) return
+  if (!currentStore) return
   const btn    = document.getElementById('btnForce')
   const errDiv = document.getElementById('forceError')
-  btn.textContent = '⬡ calling verify…'
-  btn.className = 'btn-force visible loading'
   errDiv.className = 'force-error'
 
-  chrome.runtime.sendMessage({ type:'FORCE_VERIFY', riskRestrictionId: state.active_restriction_gid || state.active_restriction_id }, res => {
+  let state = currentSession?.state || {}
+  let rid   = state.active_restriction_gid || state.active_restriction_id
+
+  // Step A: Auto-discover restriction ID if not found
+  if (!rid) {
+    btn.textContent = '🔍 Finding restriction ID…'
+    btn.className = 'btn-force visible loading'
+    showAutoBar('discover', '🔍 Running Discovery query on Shopify admin...')
+
+    const found = await new Promise(resolve =>
+      chrome.runtime.sendMessage({ type: 'AUTO_DISCOVER', store: currentStore }, r => resolve(r?.restrictionId || null))
+    )
+
+    if (!found) {
+      // Wait 2s for patcher to capture via fetch hook
+      await new Promise(r => setTimeout(r, 2500))
+      const freshSess = await new Promise(resolve =>
+        chrome.runtime.sendMessage({ type: 'GET_SESSION', store: currentStore }, r => resolve(r?.session))
+      )
+      state = freshSess?.state || {}
+      rid   = state.active_restriction_gid || state.active_restriction_id || found
+    } else {
+      rid = found
+    }
+
+    if (!rid) {
+      btn.textContent = '✕ No restriction found — go to Balance page'
+      btn.className = 'btn-force visible error'
+      errDiv.textContent = 'Could not find restriction ID. Click "Balance Page" in Quick Nav, wait 2s, then try again.'
+      errDiv.className = 'force-error visible'
+      showAutoBar('discover_fail', '❌ Restriction not found — click Balance Page in Quick Nav then retry')
+      return
+    }
+
+    showAutoBar('discover_ok', `🔍 Restriction found! Running Force Verify...`)
+  }
+
+  // Step B: Run Force Verify (PGRR mutation)
+  btn.textContent = '⬡ Running PGRR…'
+  btn.className = 'btn-force visible loading'
+
+  chrome.runtime.sendMessage({ type:'FORCE_VERIFY', riskRestrictionId: rid }, res => {
     if (chrome.runtime.lastError || !res?.ok) {
-      btn.textContent = '✕ error — retry'
+      btn.textContent = '✕ Error — tap to retry'
       btn.className = 'btn-force visible error'
       errDiv.textContent = res?.error || chrome.runtime.lastError?.message || 'unknown error'
       errDiv.className = 'force-error visible'
+      showAutoBar('pgrr_fail', '❌ PGRR failed: ' + (res?.error || 'unknown'))
     } else {
-      btn.textContent = '✓ JWT captured!'
+      btn.textContent = '✓ JWT captured! Opening Stripe…'
       btn.className = 'btn-force visible success'
-      setTimeout(() => render(), 600)
+      showAutoBar('jwt_ok', '🔑 JWT captured! Stripe will open automatically...')
+      setTimeout(() => render(), 800)
     }
   })
 }

@@ -1017,17 +1017,39 @@ function parseCaptures(url, data) {
   }
   if (url.includes('shopify/graphql') || url.includes('verificationhub')) {
     const d = data.data || {}
-    if (d.payoutGateRemediate?.challengeToken)    { o.jwt = d.payoutGateRemediate.challengeToken; o.jwt_type = 'pgrr' }
-    if (d.remediateRiskRestriction?.challengeToken){ o.jwt = d.remediateRiskRestriction.challengeToken; o.jwt_type = 'remediate' }
+    if (d.payoutGateRemediate?.challengeToken)    { o.jwt = d.payoutGateRemediate.challengeToken; o.jwt_type = 'pgrr'; o._event = 'pgrr_jwt_minted' }
+    if (d.remediateRiskRestriction?.challengeToken){ o.jwt = d.remediateRiskRestriction.challengeToken; o.jwt_type = 'remediate'; o._event = 'remediate_risk_restriction' }
     for (const k of Object.keys(d)) {
       if (k.startsWith('createIVA')||k.startsWith('createIdentityVerification')) {
         const vs = d[k]?.verificationSession
-        if (vs) { o.ek = vs.id; o.ek_client_secret = vs.clientSecret; o.assessment_ref = vs.referenceId; o.civa_variant = k; break }
+        if (vs) { o.ek = vs.id; o.ek_client_secret = vs.clientSecret; o.assessment_ref = vs.referenceId; o.civa_variant = k; o._event = 'civa_ek_minted'; break }
       }
     }
     if (d.createAssessment?.assessmentReference) o.vhub_assessment_ref = d.createAssessment.assessmentReference
+
+    // Extract restriction ID from ANY shopify/graphql response containing bankAccount
     const bh = d.shopifyPaymentsAccount?.bankAccount || d.bankAccount
-    if (bh?.riskRestrictions !== undefined) o.discharge_detected = !bh.riskRestrictions.some(r => r.status==='ACTIVE')
+    if (bh) {
+      if (bh.id) { o.bank_account_id = gid(bh.id); o.bank_account_gid = bh.id }
+      if (bh.riskRestrictions !== undefined) {
+        const act = bh.riskRestrictions.find(r => r.status === 'ACTIVE')
+        if (act) {
+          o.active_restriction_id  = gid(act.id)
+          o.active_restriction_gid = act.id
+          o.active_restriction_status = 'ACTIVE'
+          o.risk_restriction_id    = gid(act.id)
+          o._event = o._event || 'banking_home_banking'
+        }
+        o.discharge_detected = !bh.riskRestrictions.some(r => r.status === 'ACTIVE')
+      }
+    }
+
+    // Also handle top-level remediateRiskRestriction for restriction GID
+    if (d.remediateRiskRestriction?.riskRestriction?.id) {
+      const rr = d.remediateRiskRestriction.riskRestriction
+      o.active_restriction_gid = rr.id
+      o.active_restriction_id  = gid(rr.id)
+    }
   }
   if (url.includes('verify.stripe.com') && (data.session||data).status) o.stripe_session_status = (data.session||data).status
   return Object.keys(o).length ? o : null

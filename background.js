@@ -169,6 +169,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     broadcastToSidePanel({ type: 'PAGE_CONTEXT', page: msg.page, store: msg.store })
     return true
   }
+
+  if (msg.type === 'AUTO_DISCOVER') {
+    injectDiscovery(msg.store).then(rid => sendResponse({ restrictionId: rid }))
+    return true
+  }
 })
 
 // ── Session storage ────────────────────────────────────────────────────────────
@@ -205,13 +210,13 @@ async function handleCapture(msg) {
   Object.assign(session.state, captures)
   await chrome.storage.local.set({ sessions })
 
-  // Normalise restriction ID from any event
-  if (captures.risk_restriction_id && !session.state.risk_restriction_id) {
-    session.state.risk_restriction_id = captures.risk_restriction_id
+  // Normalise restriction IDs — keep all aliases in sync
+  const anyRid = captures.active_restriction_id || captures.risk_restriction_id
+  if (anyRid) {
+    session.state.active_restriction_id  = anyRid
+    session.state.risk_restriction_id    = anyRid
   }
-  if (captures.active_restriction_id && !session.state.risk_restriction_id) {
-    session.state.risk_restriction_id = captures.active_restriction_id
-  }
+  if (captures.active_restriction_gid) session.state.active_restriction_gid = captures.active_restriction_gid
 
   await chrome.storage.local.set({ sessions })
   broadcastToSidePanel({ type: 'SESSION_UPDATED', store })
@@ -318,7 +323,10 @@ async function autoOpenStripe(jwt, store) {
 }
 
 async function injectDiscovery(store) {
-  const adminTab = await getAdminTab()
+  // Prefer active tab if it's Shopify admin, otherwise any admin tab
+  const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true })
+  const activeAdmin = activeTabs.find(t => t.url?.includes('admin.shopify.com'))
+  const adminTab = activeAdmin || await getAdminTab()
   if (!adminTab) return null
   try {
     const results = await chrome.scripting.executeScript({
