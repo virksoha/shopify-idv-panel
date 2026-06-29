@@ -114,6 +114,35 @@ async function init() {
   setupOBSPreview()
   setupAdjSlider('adjZoom', 'adjZoomVal', v => v + '%', v => { ADJ.zoom = parseInt(v)/100; sendAdjust(); obsRender() })
   document.getElementById('adjReset').addEventListener('click', resetAdj)
+
+  // Mirror & Noise toggles
+  let mirrorOn = true, noiseOn = true
+  document.getElementById('toggleMirror').addEventListener('click', () => {
+    mirrorOn = !mirrorOn
+    const btn = document.getElementById('toggleMirror')
+    btn.textContent = '🪞 Mirror: ' + (mirrorOn ? 'ON' : 'OFF')
+    btn.className = 'cam-btn' + (mirrorOn ? ' active' : '')
+    sendToggle({ mirror: mirrorOn })
+  })
+  document.getElementById('toggleNoise').addEventListener('click', () => {
+    noiseOn = !noiseOn
+    const btn = document.getElementById('toggleNoise')
+    btn.textContent = '📺 Noise: ' + (noiseOn ? 'ON' : 'OFF')
+    btn.className = 'cam-btn' + (noiseOn ? ' active' : '')
+    sendToggle({ noise: noiseOn })
+  })
+}
+
+function sendToggle(opts) {
+  chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+    if (!tabs[0]?.id) return
+    chrome.scripting.executeScript({
+      target: { tabId: tabs[0].id, allFrames: true },
+      world:  'MAIN',
+      func:   (opts) => window.postMessage({ _idv:'IDV_TOGGLE', ...opts }, '*'),
+      args:   [opts]
+    }).catch(() => {})
+  })
 }
 
 async function detectStore() {

