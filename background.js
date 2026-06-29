@@ -170,6 +170,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true
   }
 
+  if (msg.type === 'SUBMIT_CONFIDENCE') {
+    broadcastToSidePanel({ type: 'SUBMIT_CONFIDENCE', ready: msg.ready, captured: msg.captured })
+    return true
+  }
+
   if (msg.type === 'AUTO_DISCOVER') {
     injectDiscovery(msg.store).then(rid => sendResponse({ restrictionId: rid }))
     return true

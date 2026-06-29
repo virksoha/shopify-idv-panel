@@ -64,6 +64,10 @@ window.addEventListener('message', ev => {
     ssSet('__idv_phase__', phase)
     pushImages()
   }
+
+  if (d?._idv === 'SUBMIT_CONFIDENCE') {
+    chrome.runtime.sendMessage({ type: 'SUBMIT_CONFIDENCE', ready: d.ready, captured: d.captured }).catch(() => {})
+  }
 })
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {

@@ -922,14 +922,53 @@ function checkDOM() {
   // Auto-open camera modal: detect "Verify your identity" popup + click Start
   autoClickStartIfNeeded(txt)
 
-  // End of flow: "Submit for review" button auto-click
+  // Track which phases have been confirmed captured
+  if (ADVANCE_W.some(w => txt.includes(w))) {
+    if (IDV.phase === 'selfie') _captured.selfie = true
+    else if (IDV.idStep === 1)  _captured.back   = true
+    else                        _captured.front   = true
+  }
+
+  // End of flow: "Submit for review" — only if 100% confident
   if (txt.includes('submit for review') || txt.includes('complete these tasks to continue')) {
-    const allTasksDone = !document.querySelector('[data-incomplete="true"], [aria-invalid="true"]')
-    if (allTasksDone) {
+    const tasksOk = isReadyToSubmit(txt)
+    window.postMessage({ _idv: 'SUBMIT_CONFIDENCE', ready: tasksOk && _captured.front && _captured.back && _captured.selfie, captured: {..._captured, tasks: tasksOk} }, '*')
+    if (tasksOk && _captured.front && _captured.back && _captured.selfie) {
       clearTimeout(_autoClickTimer)
-      _autoClickTimer = setTimeout(() => autoClickByText(['submit for review', 'submit']), 1500)
+      _autoClickTimer = setTimeout(() => {
+        // Double-check right before clicking
+        const freshTxt = document.body?.innerText?.toLowerCase() || ''
+        if (isReadyToSubmit(freshTxt)) {
+          autoClickByText(['submit for review', 'submit'])
+        }
+      }, 2000)
     }
   }
+}
+
+// Tracks which photo steps have been confirmed
+const _captured = { front: false, back: false, selfie: false }
+
+const FAIL_PHRASES = ['try again','move closer','too blurry','too dark','not detected','unable to detect','face not found','id not found','verification failed','failed','invalid','not recognized','could not verify','retake']
+
+function isReadyToSubmit(txt) {
+  // Reject if any error/fail phrases visible
+  if (FAIL_PHRASES.some(p => txt.includes(p))) return false
+  // Reject if any Shopify task-list items are incomplete
+  const hasIncomplete = document.querySelector(
+    '[data-incomplete="true"],[aria-invalid="true"],.task--incomplete,.task-incomplete,[data-status="incomplete"],[data-done="false"]'
+  )
+  if (hasIncomplete) return false
+  // Check if all visible tasks show a checkmark / complete state
+  const taskItems = document.querySelectorAll('[data-testid*="task"],[class*="task-item"],[class*="TaskItem"],[class*="checklist-item"]')
+  if (taskItems.length > 0) {
+    const allChecked = [...taskItems].every(el => {
+      const t = (el.getAttribute('data-status') || el.getAttribute('aria-checked') || el.className || '').toLowerCase()
+      return t.includes('complete') || t.includes('done') || t.includes('checked') || t.includes('success')
+    })
+    if (!allChecked) return false
+  }
+  return true
 }
 
 let _startClicked = false

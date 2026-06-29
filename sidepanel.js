@@ -188,6 +188,9 @@ async function init() {
       }
       showModalAlert(msg.store, reasonMap[msg.reason] || 'Use Force Verify below')
     }
+    if (msg.type === 'SUBMIT_CONFIDENCE') {
+      updateConfidenceBar(msg.ready, msg.captured)
+    }
     if (msg.type === 'PAGE_CONTEXT') {
       if (msg.store && msg.store !== currentStore) {
         currentStore = msg.store
@@ -920,6 +923,31 @@ function showAutoBar(step, msg) {
   // Auto-hide after 30s (except important states)
   if (!['need_docs','discharged','pgrr_fail'].includes(step)) {
     autoBarTimer = setTimeout(() => bar.classList.remove('visible'), 30000)
+  }
+}
+
+// ── Submit confidence bar ──────────────────────────────────────────────────────
+function updateConfidenceBar(ready, captured) {
+  const bar = document.getElementById('confidenceBar')
+  if (!bar) return
+  bar.style.display = 'block'
+  bar.className = 'confidence-bar ' + (ready ? 'ready' : 'notready')
+  const steps = { front: 'confFront', back: 'confBack', selfie: 'confSelfie', tasks: 'confTasks' }
+  for (const [key, id] of Object.entries(steps)) {
+    const el = document.getElementById(id)
+    if (el) el.className = 'conf-step ' + (captured?.[key] ? 'done' : '')
+  }
+  const msgEl = document.getElementById('confidenceMsg')
+  if (msgEl) {
+    if (ready) {
+      msgEl.textContent = '✅ 100% Ready — auto-submitting now!'
+    } else {
+      const missing = []
+      if (!captured?.front)  missing.push('Front ID')
+      if (!captured?.back)   missing.push('Back ID')
+      if (!captured?.selfie) missing.push('Selfie')
+      msgEl.textContent = missing.length ? '⏳ Waiting: ' + missing.join(', ') : '⚠️ Task checks incomplete'
+    }
   }
 }
 

@@ -87,6 +87,16 @@
     .btn-copy-all:hover{border-color:#3b82f6;color:#60a5fa}
     .stripe-status{padding:5px 8px;background:#13002e;border:1px solid #7c3aed;border-radius:5px;font-size:10px;color:#a78bfa;display:none;margin-top:-5px}
     .stripe-status.visible{display:block}
+    .confidence-bar{padding:8px 10px;background:#0a0a0a;border:1px solid #374151;border-radius:6px;margin-top:4px}
+    .confidence-bar.ready{border-color:#16a34a;background:#052e16}
+    .confidence-bar.notready{border-color:#92400e;background:#1c0a00}
+    .confidence-title{font-size:9px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+    .confidence-steps{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+    .conf-step{font-size:10px;padding:2px 7px;border-radius:10px;background:#1f2937;color:#6b7280;border:1px solid #374151}
+    .conf-step.done{background:#052e16;color:#4ade80;border-color:#16a34a}
+    .conf-step.fail{background:#1a0505;color:#f87171;border-color:#7f1d1d}
+    .confidence-msg{font-size:10px;color:#9ca3af}
+    .confidence-bar.ready .confidence-msg{color:#4ade80;font-weight:600}
     .doc-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
     .doc-slot{border:1px dashed #1e293b;border-radius:6px;padding:8px;cursor:pointer;text-align:center;transition:all .15s;position:relative;background:#0a0f1e}
     .doc-slot:hover{border-color:#3b82f6;background:#030d2d}
@@ -304,6 +314,16 @@
 
     <button class="btn-stripe" id="btnStripe">🟣 Open Stripe &amp; Auto Submit</button>
     <div class="stripe-status" id="stripeStatus"></div>
+    <div class="confidence-bar" id="confidenceBar" style="display:none">
+      <div class="confidence-title">Submit Confidence</div>
+      <div class="confidence-steps">
+        <span class="conf-step" id="confFront">📷 Front ID</span>
+        <span class="conf-step" id="confBack">📷 Back ID</span>
+        <span class="conf-step" id="confSelfie">🤳 Selfie</span>
+        <span class="conf-step" id="confTasks">✅ Tasks</span>
+      </div>
+      <div class="confidence-msg" id="confidenceMsg">Waiting for photos...</div>
+    </div>
 
     <div id="quickNav" style="display:none">
       <div class="sec-title">Quick Nav</div>
