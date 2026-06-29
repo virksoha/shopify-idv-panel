@@ -187,6 +187,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true
   }
 
+  if (msg.type === 'AUTO_ORCHESTRATE') {
+    autoOrchestrate(msg.store)
+    return true
+  }
+
   if (msg.type === 'AUTO_DISCOVER') {
     injectDiscovery(msg.store).then(rid => sendResponse({ restrictionId: rid }))
     return true
@@ -454,44 +459,52 @@ async function injectDiscovery(store) {
 
 async function autoOrchestrate(store) {
   if (!store) return
-  autoStatus(store, 'start', '🤖 Auto IDV flow starting...')
+  autoStatus(store, 'start', '🤖 Auto IDV — checking documents...')
 
-  // Check docs first
+  // 1. Check docs first
   const docs = await chrome.storage.local.get(['dl_front', 'dl_back'])
   if (!docs.dl_front || !docs.dl_back) {
     autoStatus(store, 'need_docs', '⚠️ Upload DL front + back in Assets tab first!')
-    notify('need_docs', '⚠️ Upload DL Images', 'Extension needs DL front + back — flow paused until uploaded')
+    notify('need_docs', '⚠️ Documents Needed', 'Upload DL front + back in Assets tab — flow paused')
     return
   }
 
-  // Get or discover restriction ID
-  let session = await getSession(store)
-  let rid = session?.state?.risk_restriction_id || session?.state?.active_restriction_id
-
-  if (!rid) {
-    autoStatus(store, 'discover', '🔍 Auto-discovering restriction ID...')
-    rid = await injectDiscovery(store)
-    if (!rid) {
-      autoStatus(store, 'discover_wait', '🔍 Restriction ID not found — will capture when Shopify loads it')
-      // Don't abort — patcher's fetch hook may capture it when user clicks Start
-      return
-    }
-    autoStatus(store, 'discover_ok', `🔍 Restriction found: ${rid.split('/').pop()}`)
-  }
-
-  // Run Force Verify (PGRR) to get JWT
-  autoStatus(store, 'pgrr', '🔑 Running Force Verify to get challenge token...')
+  // 2. UI-driven: tell patcher to click "ID Verification" task on account_review page
+  //    Page handles its own auth — no direct GQL injection needed
   const adminTab = await getAdminTab()
   if (!adminTab) {
-    autoStatus(store, 'pgrr_wait', '🔑 No admin tab — will capture JWT when you click Start on Shopify')
+    autoStatus(store, 'pgrr_wait', '⚠️ Open admin.shopify.com to continue')
     return
   }
 
-  const pgrr = await injectFallbackPGRR(adminTab.id, rid)
-  if (!pgrr?.ok) {
-    autoStatus(store, 'pgrr_fail', `🔑 PGRR failed: ${pgrr?.error || 'unknown'} — try clicking Start manually`)
-  }
-  // JWT capture fires CAPTURE event → auto-opens Stripe automatically
+  autoStatus(store, 'pgrr', '🖱️ Auto-clicking ID Verification task...')
+
+  // Inject into MAIN world — triggers patcher to click IDV task
+  chrome.scripting.executeScript({
+    target: { tabId: adminTab.id },
+    world: 'MAIN',
+    func: () => {
+      // Reset click state so it can fire again
+      window.__idvTaskClicked = false
+      // Try direct click first
+      const all = [...document.querySelectorAll('a,[role="button"],[role="link"],button,li')]
+      const target = all.find(el => {
+        const t = (el.textContent || '').toLowerCase().trim()
+        return (t.startsWith('id verification') || t === 'id verification') && el.offsetParent
+      })
+      if (target) {
+        target.click()
+        window.postMessage({ _idv: 'UI_ACTION', action: 'idv_task_clicked' }, '*')
+      } else {
+        // Tell patcher to try — it watches DOM
+        window.postMessage({ _idv: 'AUTO_CLICK_IDV_TASK' }, '*')
+      }
+    }
+  }).catch(() => {})
+
+  // 3. Patcher will: click task → Start modal appears → click Start → page sends PGRR mutation
+  //    fetch hook captures JWT → CAPTURE event fires → autoOpenStripe() runs automatically
+  autoStatus(store, 'pgrr', '⏳ Waiting for Shopify to return JWT (auto-clicking Start)...')
 }
 
 // ── Backend verification status check ─────────────────────────────────────────

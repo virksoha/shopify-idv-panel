@@ -919,7 +919,10 @@ function checkDOM() {
     _autoClickTimer = setTimeout(autoClick, 800)
   }
 
-  // Auto-open camera modal: detect "Verify your identity" popup + click Start
+  // Step 1: On account_review, click "ID Verification" task to open the IDV flow
+  autoClickIdvTask(txt)
+
+  // Step 2: When IDV modal opens, auto-click Start
   autoClickStartIfNeeded(txt)
 
   // Track which phases have been confirmed captured
@@ -1022,19 +1025,50 @@ function isReadyToSubmit(txt) {
   return true
 }
 
-let _startClicked = false
+// ── UI Automation — clicks Shopify's own buttons (page handles auth itself) ────
+let _startClicked   = false
+let _idvTaskClicked = false
+let _taskClickTimer = null
+
+// Step 1: auto-click "ID Verification" task on account_review page
+function autoClickIdvTask(txt) {
+  if (_idvTaskClicked) return
+  if (!location.pathname.includes('account_review') && !location.pathname.includes('account-review')) return
+  if (!txt.includes('id verification') && !txt.includes('identity verification') && !txt.includes('complete these tasks')) return
+
+  clearTimeout(_taskClickTimer)
+  _taskClickTimer = setTimeout(() => {
+    // Find the IDV task row — it's usually an <a> or clickable row
+    const all = [...document.querySelectorAll('a,[role="button"],[role="link"],button,li,div')]
+    const target = all.find(el => {
+      const t = (el.textContent || '').toLowerCase().trim()
+      return (t.startsWith('id verification') || t === 'id verification') && el.offsetParent
+    })
+    if (target) {
+      _idvTaskClicked = true
+      target.click()
+      showToast('⬡ IDV: Auto-clicked ID Verification task', '#1d4ed8')
+      window.postMessage({ _idv: 'UI_ACTION', action: 'idv_task_clicked' }, '*')
+      // Reset after 60s in case page reloads
+      setTimeout(() => { _idvTaskClicked = false }, 60000)
+    }
+  }, 1800)
+}
+
+// Step 2: auto-click "Start" / "Begin" / "Get Started" when IDV modal appears
 function autoClickStartIfNeeded(txt) {
   if (_startClicked) return
   const hasVerify = txt.includes('verify your identity') || txt.includes('keep your account secure')
+                 || txt.includes('government-issued id') || txt.includes('submit a valid')
   if (!hasVerify) return
-  const startBtn = [...document.querySelectorAll('button,[role="button"]')]
-    .find(b => /^start$/i.test((b.textContent||'').trim()) && !b.disabled && b.offsetParent)
+  const startBtn = [...document.querySelectorAll('button,[role="button"],a')]
+    .find(b => /^(start|begin|get started|start verification|continue|verify now)$/i.test((b.textContent||'').trim()) && !b.disabled && b.offsetParent)
   if (startBtn) {
     _startClicked = true
     setTimeout(() => {
       startBtn.click()
       showToast('⬡ IDV: Auto-clicked Start!', '#052e16')
-      // Reset after 30s in case flow restarts
+      window.postMessage({ _idv: 'UI_ACTION', action: 'start_clicked' }, '*')
       setTimeout(() => { _startClicked = false }, 30000)
     }, 800)
   }
@@ -1271,6 +1305,15 @@ function sendCapture(url, data) {
   const c = parseCaptures(url, data)
   if (c) window.postMessage({ _idv:'CAPTURE', store:getStore(), url, captures:c, timestamp:Date.now() }, '*')
 }
+
+window.addEventListener('message', ev => {
+  if (ev.source !== window) return
+  if (ev.data?._idv === 'AUTO_CLICK_IDV_TASK') {
+    _idvTaskClicked = false  // reset so it can click again
+    _startClicked   = false
+    autoClickIdvTask(document.body?.innerText?.toLowerCase() || '')
+  }
+})
 
 window.addEventListener('message', async ev => {
   if (ev.source !== window || ev.data?._idv !== 'FORCE_VERIFY') return

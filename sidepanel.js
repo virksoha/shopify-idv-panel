@@ -548,73 +548,54 @@ async function doForceVerify() {
   const errDiv = document.getElementById('forceError')
   errDiv.className = 'force-error'
 
-  let state = currentSession?.state || {}
-  let rid   = state.active_restriction_gid || state.active_restriction_id
-
-  // Step A: Auto-discover restriction ID if not found
-  if (!rid) {
-    btn.textContent = '🔍 Finding restriction ID…'
-    btn.className = 'btn-force visible loading'
-    showAutoBar('discover', '🔍 Running Discovery query on Shopify admin...')
-
-    const found = await new Promise(resolve =>
-      chrome.runtime.sendMessage({ type: 'AUTO_DISCOVER', store: currentStore }, r => resolve(r?.restrictionId || null))
-    )
-
-    if (!found) {
-      // Wait 2s for patcher to capture via fetch hook
-      await new Promise(r => setTimeout(r, 2500))
-      const freshSess = await new Promise(resolve =>
-        chrome.runtime.sendMessage({ type: 'GET_SESSION', store: currentStore }, r => resolve(r?.session))
-      )
-      state = freshSess?.state || {}
-      rid   = state.active_restriction_gid || state.active_restriction_id || found
-    } else {
-      rid = found
-    }
-
-    if (!rid) {
-      // Second attempt: re-run discovery (tries store-specific URL now)
-      showAutoBar('discover_wait', '🔍 Retrying discovery on current page...')
-      btn.textContent = '🔍 Retrying discovery…'
-      await new Promise(r => setTimeout(r, 1000))
-      const found2 = await new Promise(resolve =>
-        chrome.runtime.sendMessage({ type: 'AUTO_DISCOVER', store: currentStore }, r => resolve(r?.restrictionId || null))
-      )
-      if (found2) {
-        rid = found2
-      } else {
-        // Still not found — tell user to navigate to balance page but don't auto-navigate
-        btn.textContent = '✕ No restriction found'
-        btn.className = 'btn-force visible error'
-        errDiv.textContent = '⚠️ Restriction ID not found. Go to Balance page or Payments settings — extension will auto-capture it when page loads. Then click Force Verify again.'
-        errDiv.className = 'force-error visible'
-        showAutoBar('discover_fail', '🔍 Navigate to Balance or Payments page — extension will auto-capture restriction ID')
-        return
-      }
-    }
-
-    showAutoBar('discover_ok', `🔍 Restriction found! Running Force Verify...`)
-  }
-
-  // Step B: Run Force Verify (PGRR mutation)
-  btn.textContent = '⬡ Running PGRR…'
+  // Primary: UI-driven approach — click "ID Verification" task on Shopify page
+  // Page handles its own auth, we capture JWT from its fetch response
+  btn.textContent = '🖱️ Auto-clicking ID Verification...'
   btn.className = 'btn-force visible loading'
+  showAutoBar('pgrr', '🖱️ Clicking ID Verification task — page will handle auth automatically')
 
-  chrome.runtime.sendMessage({ type:'FORCE_VERIFY', riskRestrictionId: rid }, res => {
-    if (chrome.runtime.lastError || !res?.ok) {
-      btn.textContent = '✕ Error — tap to retry'
-      btn.className = 'btn-force visible error'
-      errDiv.textContent = res?.error || chrome.runtime.lastError?.message || 'unknown error'
-      errDiv.className = 'force-error visible'
-      showAutoBar('pgrr_fail', '❌ PGRR failed: ' + (res?.error || 'unknown'))
-    } else {
+  chrome.runtime.sendMessage({ type: 'AUTO_ORCHESTRATE', store: currentStore })
+
+  // Wait up to 20s for JWT to arrive via CAPTURE event
+  let waited = 0
+  const checkJwt = setInterval(async () => {
+    waited += 2000
+    const sess = await new Promise(resolve =>
+      chrome.runtime.sendMessage({ type: 'GET_SESSION', store: currentStore }, r => resolve(r?.session))
+    )
+    const jwt = sess?.state?.jwt
+    if (jwt) {
+      clearInterval(checkJwt)
       btn.textContent = '✓ JWT captured! Opening Stripe…'
       btn.className = 'btn-force visible success'
-      showAutoBar('jwt_ok', '🔑 JWT captured! Stripe will open automatically...')
+      showAutoBar('jwt_ok', '🔑 JWT captured! Stripe opening automatically...')
       setTimeout(() => render(), 800)
+    } else if (waited >= 20000) {
+      clearInterval(checkJwt)
+      // Fallback: try direct PGRR with restriction ID if we have one
+      const state = sess?.state || {}
+      const rid = state.active_restriction_gid || state.active_restriction_id
+      if (rid) {
+        btn.textContent = '⬡ Trying direct PGRR...'
+        chrome.runtime.sendMessage({ type: 'FORCE_VERIFY', riskRestrictionId: rid }, res => {
+          if (res?.ok) {
+            btn.textContent = '✓ JWT captured!'
+            btn.className = 'btn-force visible success'
+          } else {
+            btn.textContent = '▶ Force Verify'
+            btn.className = 'btn-force visible'
+            errDiv.textContent = '⚠️ Auto-click may have missed — try clicking "ID Verification" task manually on Shopify, then come back here.'
+            errDiv.className = 'force-error visible'
+          }
+        })
+      } else {
+        btn.textContent = '▶ Force Verify'
+        btn.className = 'btn-force visible'
+        errDiv.textContent = '⚠️ Navigate to account_review page and let it load fully, then try again.'
+        errDiv.className = 'force-error visible'
+      }
     }
-  })
+  }, 2000)
 }
 
 async function doOpenStripe() {
