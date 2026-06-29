@@ -30,7 +30,18 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     }
 
     const selfies = (docs.selfies?.length ? docs.selfies : [docs.selfie_0, docs.selfie_1, docs.selfie_2]).filter(Boolean)
-    autoStatus(null, 'stripe_submit', '🟣 Stripe page loaded — auto-submitting docs...')
+
+    // Detect which store this Stripe session belongs to
+    const adminTabs = await chrome.tabs.query({ url: 'https://admin.shopify.com/*' })
+    const store = adminTabs[0]?.url?.match(/\/store\/([^/?#]+)/)?.[1] || null
+
+    // Save clientSecret to session so sidepanel JWT polling detects it
+    if (store) {
+      await handleCapture({ store, captures: { ek_client_secret: clientSecret, jwt: clientSecret, _event: 'stripe_tab_opened' }, timestamp: Date.now() })
+      autoStatus(store, 'stripe_submit', '🟣 Stripe page loaded — auto-submitting docs...')
+    } else {
+      autoStatus(null, 'stripe_submit', '🟣 Stripe page loaded — auto-submitting docs...')
+    }
 
     // Small delay to let Stripe page fully initialize
     await new Promise(r => setTimeout(r, 3000))
@@ -93,7 +104,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'GET_SESSION') {
-    getSession(msg.store).then(s => sendResponse({ session: s }))
+    chrome.storage.local.get(['sessions'], r => {
+      const s = (r.sessions || {})[msg.store] || null
+      sendResponse({ session: s })
+    })
     return true
   }
 
@@ -501,18 +515,16 @@ async function autoOrchestrate(store) {
         return
       }
 
-      // B) account_review page → click innermost element that starts with "ID verification"
+      // B) account_review page → click the task row link for "ID verification"
       if (path.includes('account_review') || path.includes('account-review')) {
-        // Find all elements, pick the most specific (smallest) one whose text starts with "ID verification"
-        const candidates = [...document.querySelectorAll('a,[role="link"],[role="button"],button,li,p,span,h2,h3')]
-          .filter(el => /^id verification/i.test((el.textContent||'').trim()) && el.offsetParent)
-        // Sort by text length ascending → pick most specific match
-        const idvRow = candidates.sort((a,b) => (a.textContent||'').length - (b.textContent||'').length)[0]
-        if (idvRow) { idvRow.click(); return }
-        // Fallback: find any clickable ancestor that contains "ID verification" text
-        const idvContainer = [...document.querySelectorAll('[class*="task"],[class*="Task"],[class*="item"],[class*="Item"],[class*="card"],[class*="Card"]')]
-          .find(el => /id verification/i.test(el.textContent||'') && el.offsetParent)
-        if (idvContainer) { idvContainer.click(); return }
+        // Prefer <a> or <button> whose text CONTAINS "id verification" — outer clickable wrappers
+        const clickables = [...document.querySelectorAll('a,button,[role="button"],[role="link"]')]
+          .filter(el => /id verification/i.test(el.textContent||'') && !el.disabled && el.offsetParent)
+        if (clickables.length) { clickables[0].click(); return }
+        // Fallback: any element whose own text starts with "ID verification"
+        const any = [...document.querySelectorAll('li,div,section')]
+          .find(el => /^id verification/i.test((el.firstChild?.textContent||el.textContent||'').trim()) && el.offsetParent)
+        if (any) { any.click(); return }
       }
 
       // C) balance/payments page → click "verify your identity" link
@@ -715,6 +727,11 @@ async function backendVerifyCheck(store) {
       })
     }
 
+    if (!result.ok) {
+      autoStatus(store, 'pgrr_fail', `❌ Backend check failed: ${result.error || 'unknown'}`)
+      return result
+    }
+
     if (result.overallStatus === 'DISCHARGED') {
       notify('discharged_' + store, '✅ VERIFIED & DISCHARGED!', `${store} — Backend confirms: restriction cleared!`)
       autoStatus(store, 'discharged', '✅ Backend confirms: DISCHARGED — store is active!')
@@ -729,7 +746,9 @@ async function backendVerifyCheck(store) {
       const rid = session?.state?.risk_restriction_id || session?.state?.active_restriction_id
       if (rid && !pollTimers[store]) startPoll(store, rid)
     } else {
-      autoStatus(store, 'stripe_submit', `📡 Backend: ${result.overallStatus} — ${result.passPct}% complete`)
+      const status = result.overallStatus || 'UNKNOWN'
+      const pct    = result.passPct    ?? 0
+      autoStatus(store, 'stripe_submit', `📡 Backend: ${status} — ${pct}% complete`)
     }
 
     return result

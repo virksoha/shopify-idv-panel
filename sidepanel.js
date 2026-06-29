@@ -572,7 +572,7 @@ async function doForceVerify() {
         })
       } catch (_) { resolve(null) }
     })
-    const jwt = sess?.state?.jwt
+    const jwt = sess?.state?.jwt || sess?.state?.ek_client_secret
     if (jwt) {
       clearInterval(checkJwt); clearInterval(reFireOrch)
       btn.textContent = '✓ JWT captured! Opening Stripe…'
