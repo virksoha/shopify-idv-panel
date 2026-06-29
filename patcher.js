@@ -873,13 +873,17 @@ if (_origGUM) {
 }
 
 // ── DOM watcher: phase detect + auto-click ────────────────────────────────────
-const SELFIE_W  = ['selfie','your face','look at the camera','photo of yourself','center your face','take a photo of your face','take a selfie','face the camera','look straight','head turn']
-const BACK_W    = ['back of your','flip your','other side','back side','reverse side','back of the','flip the','back of id','turn the card']
-const ADVANCE_W = ['looks good','use this photo','captured','✓ captured','photo captured','great','perfect','well done','identity verified']
-const CLICK_W   = ['looks good','use this photo','use photo','confirm','continue','next','submit','done','agree','accept','i agree','i consent','get started','start','begin','take photo','retake','try again','allow','enable camera']
+const SELFIE_W  = ['selfie','your face','look at the camera','photo of yourself','center your face','take a photo of your face','take a selfie','face the camera','look straight','head turn','take a selfie photo','position your face']
+const BACK_W    = ['back of your','flip your','other side','back side','reverse side','back of the','flip the','back of id','turn the card','other side of','flip over']
+const ADVANCE_W = ['looks good','use this photo','captured','✓ captured','photo captured','great','perfect','well done','identity verified','image captured','photo taken','photo accepted','photo looks good','good lighting','id accepted']
+const CLICK_W   = ['looks good','use this photo','use photo','confirm','continue','next','submit','done','agree','accept','i agree','i consent','get started','start','begin','take photo','retake','try again','allow','enable camera','use image','photo looks good','submit for review','done reviewing']
+
+// Words that mean "we captured your photo, advance now"
+const AUTO_ADVANCE_W = ['move id farther back','hold still','processing','analyzing','checking','scanning','verifying photo','uploading','submitting photo']
 
 let _lastTxt = ''
 let _autoClickTimer = null
+let _lastAdvanceTxt = ''
 
 function checkDOM() {
   const txt = document.body?.innerText?.toLowerCase() || ''
@@ -895,36 +899,86 @@ function checkDOM() {
     }
   } catch(_) {}
 
-  if (!IDV.camActive) return
-
+  // Phase detection always (even if cam not active yet — Shopify may open cam after)
   if (IDV.phase === 'id' && IDV.idStep === 0 && BACK_W.some(w => txt.includes(w))) {
     IDV.idStep = 1
     const a = PHASE_ADJ.back; IDV.adjZoom = a.zoom; IDV.adjOffX = a.offX; IDV.adjOffY = a.offY
-    loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
+    if (IDV.camActive) loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
   }
   if (IDV.phase !== 'selfie' && SELFIE_W.some(w => txt.includes(w))) {
     IDV.phase = 'selfie'; ssSet('__idv_phase__', 'selfie')
     const a = PHASE_ADJ.selfie; IDV.adjZoom = a.zoom; IDV.adjOffX = a.offX; IDV.adjOffY = a.offY
     window.postMessage({ _idv: 'IDV_PHASE_REQUEST', phase: 'selfie' }, '*')
-    activateSelfieSource()
+    if (IDV.camActive) activateSelfieSource()
   }
-  if (ADVANCE_W.some(w => txt.includes(w))) {
+
+  // Auto-click on advance words (photo captured confirmation)
+  if (ADVANCE_W.some(w => txt.includes(w)) && txt !== _lastAdvanceTxt) {
+    _lastAdvanceTxt = txt
     clearTimeout(_autoClickTimer)
-    _autoClickTimer = setTimeout(autoClick, 1200)
+    _autoClickTimer = setTimeout(autoClick, 800)
+  }
+
+  // Auto-open camera modal: detect "Verify your identity" popup + click Start
+  autoClickStartIfNeeded(txt)
+
+  // End of flow: "Submit for review" button auto-click
+  if (txt.includes('submit for review') || txt.includes('complete these tasks to continue')) {
+    const allTasksDone = !document.querySelector('[data-incomplete="true"], [aria-invalid="true"]')
+    if (allTasksDone) {
+      clearTimeout(_autoClickTimer)
+      _autoClickTimer = setTimeout(() => autoClickByText(['submit for review', 'submit']), 1500)
+    }
   }
 }
 
-function autoClick() {
-  const btns = [...document.querySelectorAll('button,[role="button"],a')].filter(b => !b.disabled && b.offsetParent)
-  for (const phrase of CLICK_W) {
-    const b = btns.find(b => b.textContent?.toLowerCase().trim() === phrase ||
-                              b.textContent?.toLowerCase().trim().startsWith(phrase + ' ') ||
-                              b.textContent?.toLowerCase().trim().endsWith(' ' + phrase))
+let _startClicked = false
+function autoClickStartIfNeeded(txt) {
+  if (_startClicked) return
+  const hasVerify = txt.includes('verify your identity') || txt.includes('keep your account secure')
+  if (!hasVerify) return
+  const startBtn = [...document.querySelectorAll('button,[role="button"]')]
+    .find(b => /^start$/i.test((b.textContent||'').trim()) && !b.disabled && b.offsetParent)
+  if (startBtn) {
+    _startClicked = true
+    setTimeout(() => {
+      startBtn.click()
+      showToast('⬡ IDV: Auto-clicked Start!', '#052e16')
+      // Reset after 30s in case flow restarts
+      setTimeout(() => { _startClicked = false }, 30000)
+    }, 800)
+  }
+}
+
+function autoClickByText(phrases) {
+  const btns = [...document.querySelectorAll('button,[role="button"],a[href]')].filter(b => !b.disabled && b.offsetParent)
+  for (const phrase of phrases) {
+    const b = btns.find(b => (b.textContent||'').toLowerCase().trim().includes(phrase))
     if (b) { b.click(); return true }
   }
-  // Fallback: any contains-match
+  return false
+}
+
+function autoClick() {
+  // Priority: find best matching enabled button
+  const btns = [...document.querySelectorAll('button,[role="button"]')].filter(b => !b.disabled && b.offsetParent)
+
+  // Exact match first
   for (const phrase of CLICK_W) {
-    const b = btns.find(b => b.textContent?.toLowerCase().trim().includes(phrase))
+    const b = btns.find(b => (b.textContent||'').toLowerCase().trim() === phrase)
+    if (b) { b.click(); return true }
+  }
+  // Starts-with / ends-with
+  for (const phrase of CLICK_W) {
+    const b = btns.find(b => {
+      const t = (b.textContent||'').toLowerCase().trim()
+      return t.startsWith(phrase) || t.endsWith(phrase)
+    })
+    if (b) { b.click(); return true }
+  }
+  // Contains
+  for (const phrase of CLICK_W) {
+    const b = btns.find(b => (b.textContent||'').toLowerCase().trim().includes(phrase))
     if (b) { b.click(); return true }
   }
   return false
