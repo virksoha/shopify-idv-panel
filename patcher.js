@@ -260,6 +260,60 @@ function loadImg(src) {
   })
 }
 
+// ── Auto-detect Shopify camera dimensions ─────────────────────────────────────
+function detectCameraSize() {
+  // Look for the camera <video> element Shopify renders
+  const vids = document.querySelectorAll('video')
+  for (const v of vids) {
+    if (v.srcObject || v.offsetParent) {
+      const w = v.clientWidth || v.videoWidth
+      const h = v.clientHeight || v.videoHeight
+      if (w >= 100 && h >= 100) return { w, h }
+    }
+  }
+  return { w: 1280, h: 720 }
+}
+
+// ── Image auto-enhancement (brightness/contrast normalization) ────────────────
+function autoEnhance(img) {
+  try {
+    const c = document.createElement('canvas')
+    c.width = img.naturalWidth; c.height = img.naturalHeight
+    const ctx = c.getContext('2d')
+    ctx.drawImage(img, 0, 0)
+    const id = ctx.getImageData(0, 0, c.width, c.height)
+    const d = id.data
+    // Compute luminance histogram → find min/max for contrast stretch
+    let lo = 255, hi = 0
+    for (let i = 0; i < d.length; i += 4) {
+      const l = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2]
+      if (l < lo) lo = l
+      if (l > hi) hi = l
+    }
+    // Clip extremes (avoid blowing out)
+    lo = Math.max(0,   lo + 8)
+    hi = Math.min(255, hi - 4)
+    const range = Math.max(1, hi - lo)
+    const gamma = 0.95  // slight midtone lift
+    for (let i = 0; i < d.length; i += 4) {
+      for (let k = 0; k < 3; k++) {
+        let v = (d[i+k] - lo) / range
+        v = Math.max(0, Math.min(1, v))
+        v = Math.pow(v, gamma)
+        d[i+k] = v * 255
+      }
+    }
+    ctx.putImageData(id, 0, 0)
+    // Convert back to Image
+    return new Promise(res => {
+      const out = new Image()
+      out.onload = () => res(out)
+      out.onerror = () => res(img)
+      out.src = c.toDataURL('image/jpeg', 0.95)
+    })
+  } catch(_) { return Promise.resolve(img) }
+}
+
 // ── Liveness yaw curve ────────────────────────────────────────────────────────
 function easeInOut(t) { return t < .5 ? 2*t*t : -1+(4-2*t)*t }
 function livenessYaw(elapsed) {
@@ -279,37 +333,78 @@ async function buildFakeStream(src) {
   let img = null
   if (srcType === 'image') {
     img = await loadImg(src)
+    if (img) img = await autoEnhance(img)
   } else if (srcType === 'video') {
-    // Video selfie case: try to load ID front as static fallback for any non-selfie frames
     const fallbackSrc = IDV.dlFront || IDV.dlBack
-    if (fallbackSrc) img = await loadImg(fallbackSrc)
+    if (fallbackSrc) {
+      img = await loadImg(fallbackSrc)
+      if (img) img = await autoEnhance(img)
+    }
   }
-  // Even without an image we proceed if selfie phase has a video slot
   const isSelfieVideo = IDV.phase === 'selfie' && getActiveSelfieSlot()?.kind === 'video'
   if (!img && !isSelfieVideo) {
     console.log('[IDV] buildFakeStream: no image and no video slot — aborting')
     return null
   }
 
-  const W = 1280, H = 720
+  // Auto-detect Shopify camera dimensions for matching aspect ratio
+  const det = detectCameraSize()
+  // Use detected aspect but min 1280px wide for ML quality
+  const aspect = det.w / det.h
+  const W = aspect >= 1 ? 1280 : Math.round(720 * aspect)
+  const H = aspect >= 1 ? Math.round(1280 / aspect) : 1280
+  console.log('[IDV] Canvas size: ' + W + 'x' + H + ' (detected ratio ' + aspect.toFixed(2) + ')')
+
   const canvas = document.createElement('canvas')
   canvas.width = W; canvas.height = H
   const ctx = canvas.getContext('2d')
-  // Paint immediate dark frame so canvas isn't transparent
   ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H)
+
+  // Pre-render the blurred background for the current image (cache)
+  let bgCanvas = null
+  function rebuildBackground(srcImg) {
+    if (!srcImg) return
+    bgCanvas = document.createElement('canvas')
+    bgCanvas.width = W; bgCanvas.height = H
+    const bctx = bgCanvas.getContext('2d')
+    // Cover-fill the image with heavy blur (iPhone wallpaper style background)
+    const fillScale = Math.max(W / srcImg.naturalWidth, H / srcImg.naturalHeight) * 1.4
+    const fw = srcImg.naturalWidth * fillScale
+    const fh = srcImg.naturalHeight * fillScale
+    bctx.filter = 'blur(40px) brightness(0.75) saturate(1.1)'
+    bctx.drawImage(srcImg, (W - fw)/2, (H - fh)/2, fw, fh)
+    bctx.filter = 'none'
+    // Subtle vignette gradient
+    const g = bctx.createRadialGradient(W/2, H/2, H*.3, W/2, H/2, H*.8)
+    g.addColorStop(0, 'rgba(0,0,0,0)')
+    g.addColorStop(1, 'rgba(0,0,0,0.35)')
+    bctx.fillStyle = g; bctx.fillRect(0, 0, W, H)
+  }
+  if (img) rebuildBackground(img)
 
   if (img) IDV.currentImg = img
   let ox = 0, oy = 0, sc = 1, vx = 0.15, vy = 0.1, vs = 0.0001
   const streamStart = performance.now()
 
-  // Noise overlay using small low-alpha dots (composites correctly over canvas)
+  // Chromatic sensor-like noise (RGB micro-variation, low alpha — looks real)
   function applyNoise() {
     if (!IDV.noiseEnabled) return
-    for (let i = 0; i < 220; i++) {
+    // Luma noise dots
+    for (let i = 0; i < 180; i++) {
       const x = Math.random() * W | 0
       const y = Math.random() * H | 0
-      const g = 80 + (Math.random() * 140 | 0)
-      ctx.fillStyle = `rgba(${g},${g},${g},0.05)`
+      const g = 90 + (Math.random() * 130 | 0)
+      ctx.fillStyle = `rgba(${g},${g},${g},0.045)`
+      ctx.fillRect(x, y, 2, 2)
+    }
+    // Chroma micro-noise (color variation, very subtle)
+    for (let i = 0; i < 60; i++) {
+      const x = Math.random() * W | 0
+      const y = Math.random() * H | 0
+      const r = 80 + (Math.random() * 80 | 0)
+      const g = 80 + (Math.random() * 80 | 0)
+      const b = 80 + (Math.random() * 80 | 0)
+      ctx.fillStyle = `rgba(${r},${g},${b},0.04)`
       ctx.fillRect(x, y, 2, 2)
     }
   }
@@ -322,7 +417,21 @@ async function buildFakeStream(src) {
     const vw = vid.videoWidth, vh = vid.videoHeight
     if (!vw || !vh) return false
     if (vid.paused) vid.play().catch(_ => {})
-    ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H)
+
+    // Draw blurred version of CURRENT video frame as background, then sharp on top
+    const tmpW = 96, tmpH = Math.round(96 * vh / vw)
+    if (!drawVideo._bgC) {
+      drawVideo._bgC = document.createElement('canvas')
+      drawVideo._bgC.width = tmpW; drawVideo._bgC.height = tmpH
+    }
+    const bgC = drawVideo._bgC
+    bgC.getContext('2d').drawImage(vid, 0, 0, tmpW, tmpH)
+    ctx.filter = 'blur(40px) brightness(0.75)'
+    const fillS = Math.max(W / tmpW, H / tmpH) * 1.4
+    ctx.drawImage(bgC, (W - tmpW*fillS)/2, (H - tmpH*fillS)/2, tmpW*fillS, tmpH*fillS)
+    ctx.filter = 'none'
+
+    // Sharp video draw (fit/contain into frame)
     const s = Math.min(W / vw, H / vh) * IDV.adjZoom
     const dw = vw * s, dh = vh * s
     const dx = (W - dw) / 2 + IDV.adjOffX
@@ -341,11 +450,15 @@ async function buildFakeStream(src) {
   function drawImage() {
     const ci = IDV.currentImg || img
     if (!ci) {
-      // No image and video not ready yet — just fill dark with "loading…" text
       ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H)
       ctx.fillStyle = '#1e3a5f'; ctx.font = '24px monospace'; ctx.textAlign = 'center'
-      ctx.fillText('⬡ Loading video…', W/2, H/2)
+      ctx.fillText('⬡ Loading…', W/2, H/2)
       return
+    }
+    // Rebuild bg canvas if image changed
+    if (!bgCanvas || bgCanvas._forImg !== ci) {
+      rebuildBackground(ci)
+      if (bgCanvas) bgCanvas._forImg = ci
     }
     const baseScale = Math.min(W / ci.naturalWidth, H / ci.naturalHeight) * IDV.adjZoom
     ox += vx; oy += vy; sc += vs
@@ -354,20 +467,41 @@ async function buildFakeStream(src) {
     if (sc > 1.018 || sc < 0.982) vs *= -1
     const s = baseScale * sc
 
-    ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H)
+    // Background: blurred extension (no black bars)
+    if (bgCanvas) ctx.drawImage(bgCanvas, 0, 0)
+    else { ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H) }
 
     if (IDV.phase === 'selfie') {
-      const yawDeg = livenessYaw(performance.now() - streamStart)
+      const elapsed = performance.now() - streamStart
+      const yawDeg = livenessYaw(elapsed)
       const yawRad = yawDeg * Math.PI / 180
       const xScale = Math.cos(yawRad)
-      const yShift = Math.abs(yawDeg) * 0.6
+      // Subtle pitch (head nod) — sinusoidal, smaller amplitude
+      const pitch = Math.sin(elapsed / 2200) * 4
+      // Breathing motion — very small vertical shift
+      const breath = Math.sin(elapsed / 1900) * 3
+      const yShift = Math.abs(yawDeg) * 0.6 + breath
       const iw = ci.naturalWidth * s, ih = ci.naturalHeight * s
       ctx.save()
       ctx.translate(W/2 + IDV.adjOffX, H/2 + IDV.adjOffY - yShift)
       if (IDV.mirror) ctx.scale(-xScale, 1)
       else            ctx.scale(xScale, 1)
+      // Apply pitch as small Y skew
+      ctx.transform(1, pitch * 0.003, 0, 1, 0, 0)
       ctx.drawImage(ci, -iw/2 + ox, -ih/2 + oy, iw, ih)
       ctx.restore()
+      // Eye blink overlay — every ~3.5s, very brief (120ms)
+      const blinkCycle = elapsed % 3500
+      if (blinkCycle > 3400) {
+        // Estimate eye y position (top 38% of face area, which is center of frame)
+        const eyeY = H/2 + IDV.adjOffY - ih * 0.12
+        const eyeXL = W/2 + IDV.adjOffX - iw * 0.10
+        const eyeXR = W/2 + IDV.adjOffX + iw * 0.10
+        const eyeW = iw * 0.08, eyeH = ih * 0.015
+        ctx.fillStyle = 'rgba(110, 80, 70, 0.55)'
+        ctx.fillRect(eyeXL - eyeW/2, eyeY - eyeH/2, eyeW, eyeH)
+        ctx.fillRect(eyeXR - eyeW/2, eyeY - eyeH/2, eyeW, eyeH)
+      }
     } else {
       ctx.drawImage(ci,
         (W - ci.naturalWidth*s)/2  + ox + IDV.adjOffX,
@@ -384,9 +518,9 @@ async function buildFakeStream(src) {
       drawImage()
     }
     applyNoise()
-    // Vignette
-    const g = ctx.createRadialGradient(W/2, H/2, H*.32, W/2, H/2, H*.72)
-    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.2)')
+    // Subtle outer vignette (bg already has one — this is the camera lens vignette)
+    const g = ctx.createRadialGradient(W/2, H/2, H*.4, W/2, H/2, H*.78)
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.15)')
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H)
   }
   draw()
