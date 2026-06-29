@@ -326,7 +326,9 @@ async function injectDiscovery(store) {
   // Prefer active tab if it's Shopify admin, otherwise any admin tab
   const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true })
   const activeAdmin = activeTabs.find(t => t.url?.includes('admin.shopify.com'))
-  const adminTab = activeAdmin || await getAdminTab()
+  // Also search all windows
+  const allAdminTabs = await chrome.tabs.query({ url: 'https://admin.shopify.com/*' })
+  const adminTab = activeAdmin || allAdminTabs[0]
   if (!adminTab) return null
   try {
     const results = await chrome.scripting.executeScript({

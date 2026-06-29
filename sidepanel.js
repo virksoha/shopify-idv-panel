@@ -560,12 +560,24 @@ async function doForceVerify() {
     }
 
     if (!rid) {
-      btn.textContent = '✕ No restriction found — go to Balance page'
-      btn.className = 'btn-force visible error'
-      errDiv.textContent = 'Could not find restriction ID. Click "Balance Page" in Quick Nav, wait 2s, then try again.'
-      errDiv.className = 'force-error visible'
-      showAutoBar('discover_fail', '❌ Restriction not found — click Balance Page in Quick Nav then retry')
-      return
+      // Auto-open Balance page to capture restriction ID, then retry
+      btn.textContent = '⬡ Opening Balance page…'
+      showAutoBar('discover_wait', '🔍 Opening Balance page to find restriction ID...')
+      openAdminPage('balance/account')
+      // Wait for patcher to fire and capture
+      await new Promise(r => setTimeout(r, 4000))
+      const sess2 = await new Promise(resolve =>
+        chrome.runtime.sendMessage({ type:'GET_SESSION', store:currentStore }, r => resolve(r?.session))
+      )
+      rid = sess2?.state?.active_restriction_gid || sess2?.state?.active_restriction_id
+      if (!rid) {
+        btn.textContent = '✕ Balance page opened — wait 3s then retry'
+        btn.className = 'btn-force visible error'
+        errDiv.textContent = 'Balance page opened in background. Wait 3 seconds for data to load, then click this button again.'
+        errDiv.className = 'force-error visible'
+        showAutoBar('discover_fail', '🔍 Balance page opened — wait 3s then click Force Verify again')
+        return
+      }
     }
 
     showAutoBar('discover_ok', `🔍 Restriction found! Running Force Verify...`)

@@ -977,12 +977,48 @@ function checkModalPopup() {
   } catch(_) {}
 }
 
-// Also fire immediately on account_review pages (even before modal appears)
+// Auto-fire Discovery query on any Shopify admin page to capture restriction ID
+async function autoDiscoverRestriction() {
+  try {
+    // _origFetch is defined below — this is called via setTimeout so it's safe
+    const q = `query D{shopifyPaymentsAccount{bankAccount{id riskRestrictions{id status}}}}`
+    const res = await _origFetch('https://admin.shopify.com/api/shopify/graphql.json', {
+      method:'POST', credentials:'include',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ query: q })
+    })
+    const data = await res.json()
+    sendCapture('shopify/graphql', data)
+    const ba = data?.data?.shopifyPaymentsAccount?.bankAccount
+    const act = (ba?.riskRestrictions || []).find(r => r.status === 'ACTIVE')
+    if (act) showToast('⬡ IDV: Restriction found — ' + gid(act.id), '#052e16')
+  } catch(_) {}
+}
+
+// Also intercept XHR (Shopify sometimes uses XHR instead of fetch)
+function patchXHR() {
+  const _origOpen = XMLHttpRequest.prototype.open
+  const _origSend = XMLHttpRequest.prototype.send
+  XMLHttpRequest.prototype.open = function(method, url) {
+    this._idvUrl = url
+    return _origOpen.apply(this, arguments)
+  }
+  XMLHttpRequest.prototype.send = function(body) {
+    const url = this._idvUrl || ''
+    if (FPAT.some(p => url.includes(p))) {
+      this.addEventListener('load', () => {
+        try { sendCapture(url, JSON.parse(this.responseText)) } catch(_) {}
+      })
+    }
+    return _origSend.apply(this, arguments)
+  }
+}
+try { patchXHR() } catch(_) {}
+
 function checkPageContext() {
   try {
     const store = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
     if (!store) return
-    // Let sidepanel know which page we're on for context
     const page = location.pathname.includes('account_review') ? 'account_review'
                : location.pathname.includes('balance')        ? 'balance'
                : location.pathname.includes('payments')       ? 'payments'
@@ -997,6 +1033,10 @@ function watchDOM() {
   checkDOM()
   checkModalPopup()
   setTimeout(checkPageContext, 500)
+  // Auto-discover restriction ID on any Shopify admin page (after page+fetch hook ready)
+  if (location.hostname === 'admin.shopify.com') {
+    setTimeout(autoDiscoverRestriction, 2000)
+  }
 }
 watchDOM()
 
