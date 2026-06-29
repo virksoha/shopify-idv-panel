@@ -17,18 +17,28 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     await chrome.sidePanel.setOptions({ tabId, enabled: true, path: 'sidepanel.html' }).catch(() => {})
   }
 
-  // Auto-submit when Stripe verification page loads
+  // Auto-submit when Stripe verification page loads — extract secret from URL directly
   if (changeInfo.status === 'complete' && isStripe) {
-    const store = await getActiveStore()
-    if (!store) return
-    const session = await getSession(store)
-    if (!session?.state?.ek_client_secret) return
-    const docs = await chrome.storage.local.get(['dl_front', 'dl_back', 'selfies'])
-    if (!docs.dl_front || !docs.dl_back) return
+    const clientSecret = tab.url.match(/verify\.stripe\.com\/verify\/([^?#]+)/)?.[1]
+    if (!clientSecret) return
+
+    const docs = await chrome.storage.local.get(['dl_front', 'dl_back', 'selfie_0', 'selfie_1', 'selfie_2', 'selfies'])
+    if (!docs.dl_front || !docs.dl_back) {
+      autoStatus(null, 'need_docs', '⚠️ Upload DL front + back in Assets tab!')
+      notify('need_docs', '⚠️ Upload DL Images', 'DL front + back needed in Assets tab before Stripe can auto-submit')
+      return
+    }
+
+    const selfies = (docs.selfies?.length ? docs.selfies : [docs.selfie_0, docs.selfie_1, docs.selfie_2]).filter(Boolean)
+    autoStatus(null, 'stripe_submit', '🟣 Stripe page loaded — auto-submitting docs...')
+
+    // Small delay to let Stripe page fully initialize
+    await new Promise(r => setTimeout(r, 3000))
+
     chrome.scripting.executeScript({
       target: { tabId },
       func: stripeAutoSubmit,
-      args: [{ dlFront: docs.dl_front, dlBack: docs.dl_back, selfies: docs.selfies || [] }]
+      args: [{ dlFront: docs.dl_front, dlBack: docs.dl_back, selfies }]
     }).catch(e => console.log('[IDV] inject err:', e))
   }
 })
@@ -37,15 +47,34 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'CAPTURE') {
-    handleCapture(msg).then(async (wasNew) => {
-      // Notify on key events
-      if (msg.captures?._event === 'pgrr_jwt_minted' || msg.captures?._event === 'remediate_risk_restriction') {
-        notify('jwt', '🔑 JWT Captured', `Store: ${msg.store} — PGRR challenge token ready`)
+    handleCapture(msg).then(async () => {
+      const ev  = msg.captures?._event
+      const jwt = msg.captures?.jwt
+
+      // Step 2→3: JWT captured → auto-open Stripe
+      if ((ev === 'pgrr_jwt_minted' || ev === 'remediate_risk_restriction') && jwt) {
+        notify('jwt', '🔑 JWT Captured', `Store: ${msg.store} — Opening Stripe automatically...`)
+        autoStatus(msg.store, 'jwt_ok', '🔑 JWT captured! Opening Stripe...')
+        await autoOpenStripe(jwt, msg.store)
       }
+
+      // Step 4→5: Stripe submitted → auto-start discharge poll
+      const sStatus = msg.captures?.stripe_session_status
+      if (['processing','verified','succeeded'].includes(sStatus) && msg.store) {
+        notify('stripe_' + msg.store, '🟣 Stripe Submitted!', `${msg.store} — Starting discharge poll...`)
+        autoStatus(msg.store, 'stripe_done', '🟣 Stripe submitted! Starting discharge poll...')
+        const session = await getSession(msg.store)
+        const rid = session?.state?.risk_restriction_id || session?.state?.active_restriction_id
+        if (rid && !pollTimers[msg.store]) startPoll(msg.store, rid)
+      }
+
+      // Step 5: Discharged!
       if (msg.captures?.discharge_detected === true) {
-        notify('discharge_' + msg.store, '✅ DISCHARGED!', `${msg.store} — Risk restriction cleared!`)
+        notify('discharge_' + msg.store, '✅ DISCHARGED!', `${msg.store} — All done! Store is active.`)
+        autoStatus(msg.store, 'discharged', '✅ DISCHARGED! Store restriction cleared!')
         stopPoll(msg.store)
       }
+
       sendResponse({ ok: true })
     })
     return true
@@ -131,10 +160,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'STRIPE_MODAL_DETECTED') {
     broadcastToSidePanel({ type: 'STRIPE_MODAL_DETECTED', store: msg.store, href: msg.href, reason: msg.reason })
-    const reasonText = msg.reason === 'account_review' ? 'Account review page — use Force Verify'
-                     : msg.reason === 'flagged_page'   ? 'Store is flagged — start IDV flow'
-                     : 'Click Start or use Force Verify'
-    notify('modal_' + (msg.store || 'x'), '🔔 Verify Identity needed!', `Store: ${msg.store || '?'} — ${reasonText}`)
+    // Kick off full auto-flow
+    autoOrchestrate(msg.store)
     return true
   }
 
@@ -178,14 +205,16 @@ async function handleCapture(msg) {
   Object.assign(session.state, captures)
   await chrome.storage.local.set({ sessions })
 
-  // Auto-start poll when Stripe submit confirmed
-  const state = session.state
-  if (captures.stripe_session_status && ['processing','verified','succeeded'].includes(captures.stripe_session_status)) {
-    if (state.active_restriction_id && !pollTimers[store]) {
-      startPoll(store, state.active_restriction_gid || state.active_restriction_id)
-      notify('stripe_' + store, '🟣 Stripe Submitted', `${store} — Polling for discharge every 45s`)
-    }
+  // Normalise restriction ID from any event
+  if (captures.risk_restriction_id && !session.state.risk_restriction_id) {
+    session.state.risk_restriction_id = captures.risk_restriction_id
   }
+  if (captures.active_restriction_id && !session.state.risk_restriction_id) {
+    session.state.risk_restriction_id = captures.active_restriction_id
+  }
+
+  await chrome.storage.local.set({ sessions })
+  broadcastToSidePanel({ type: 'SESSION_UPDATED', store })
   return isNew
 }
 
@@ -263,6 +292,104 @@ async function injectFallbackPGRR(tabId, restrictionId) {
   } catch(e) {
     return { ok: false, error: String(e) }
   }
+}
+
+// ── Auto-orchestration ────────────────────────────────────────────────────────
+function autoStatus(store, step, msg) {
+  broadcastToSidePanel({ type: 'AUTO_STATUS', store, step, msg })
+  console.log('[IDV AUTO]', step, msg)
+}
+
+async function autoOpenStripe(jwt, store) {
+  // Check if a Stripe tab is already open
+  const existingStripe = await chrome.tabs.query({ url: 'https://verify.stripe.com/*' })
+  if (existingStripe.length > 0) return  // already open, onUpdated will handle it
+
+  const docs = await chrome.storage.local.get(['dl_front', 'dl_back'])
+  if (!docs.dl_front || !docs.dl_back) {
+    autoStatus(store, 'need_docs', '⚠️ Upload DL front + back in Assets tab to continue!')
+    notify('need_docs', '⚠️ Documents Needed', 'Upload DL front + back in Assets tab — flow paused')
+    return
+  }
+
+  const url = `https://verify.stripe.com/verify/${jwt}`
+  await chrome.tabs.create({ url, active: true })
+  autoStatus(store, 'stripe_open', '🟣 Stripe tab opened — auto-submitting in 3s...')
+}
+
+async function injectDiscovery(store) {
+  const adminTab = await getAdminTab()
+  if (!adminTab) return null
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: adminTab.id },
+      world: 'MAIN',
+      func: async () => {
+        const q = `query IDVDiscover{shopifyPaymentsAccount{bankAccount{id riskRestrictions{id status}}}}`
+        const res = await fetch('https://admin.shopify.com/api/shopify/graphql.json', {
+          method:'POST', credentials:'include',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ query: q })
+        })
+        const data = await res.json()
+        const ba = data?.data?.shopifyPaymentsAccount?.bankAccount
+        const active = ba?.riskRestrictions?.find(r => r.status === 'ACTIVE')
+        const store = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
+        if (store && ba) {
+          window.postMessage({ _idv:'CAPTURE', store, url:'shopify/graphql', captures:{
+            bank_account_id: ba.id,
+            risk_restriction_id: active?.id,
+            risk_restrictions: ba.riskRestrictions,
+            _event: 'banking_home_banking'
+          }, timestamp: Date.now() }, '*')
+        }
+        return active?.id || null
+      }, args: []
+    })
+    return results?.[0]?.result || null
+  } catch(e) { return null }
+}
+
+async function autoOrchestrate(store) {
+  if (!store) return
+  autoStatus(store, 'start', '🤖 Auto IDV flow starting...')
+
+  // Check docs first
+  const docs = await chrome.storage.local.get(['dl_front', 'dl_back'])
+  if (!docs.dl_front || !docs.dl_back) {
+    autoStatus(store, 'need_docs', '⚠️ Upload DL front + back in Assets tab first!')
+    notify('need_docs', '⚠️ Upload DL Images', 'Extension needs DL front + back — flow paused until uploaded')
+    return
+  }
+
+  // Get or discover restriction ID
+  let session = await getSession(store)
+  let rid = session?.state?.risk_restriction_id || session?.state?.active_restriction_id
+
+  if (!rid) {
+    autoStatus(store, 'discover', '🔍 Auto-discovering restriction ID...')
+    rid = await injectDiscovery(store)
+    if (!rid) {
+      autoStatus(store, 'discover_wait', '🔍 Restriction ID not found — will capture when Shopify loads it')
+      // Don't abort — patcher's fetch hook may capture it when user clicks Start
+      return
+    }
+    autoStatus(store, 'discover_ok', `🔍 Restriction found: ${rid.split('/').pop()}`)
+  }
+
+  // Run Force Verify (PGRR) to get JWT
+  autoStatus(store, 'pgrr', '🔑 Running Force Verify to get challenge token...')
+  const adminTab = await getAdminTab()
+  if (!adminTab) {
+    autoStatus(store, 'pgrr_wait', '🔑 No admin tab — will capture JWT when you click Start on Shopify')
+    return
+  }
+
+  const pgrr = await injectFallbackPGRR(adminTab.id, rid)
+  if (!pgrr?.ok) {
+    autoStatus(store, 'pgrr_fail', `🔑 PGRR failed: ${pgrr?.error || 'unknown'} — try clicking Start manually`)
+  }
+  // JWT capture fires CAPTURE event → auto-opens Stripe automatically
 }
 
 // ── Open Stripe verification ───────────────────────────────────────────────────

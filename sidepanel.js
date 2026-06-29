@@ -166,10 +166,19 @@ async function init() {
       if (msg.meta) pollCount = msg.meta.count || 0
       renderPollBar()
     }
+    if (msg.type === 'AUTO_STATUS') {
+      showAutoBar(msg.step, msg.msg)
+      // Also refresh steps if session updated
+      if (['jwt_ok','stripe_done','discharged','discover_ok'].includes(msg.step)) render()
+    }
+    if (msg.type === 'SESSION_UPDATED') {
+      if (!currentStore || msg.store === currentStore) render()
+    }
     if (msg.type === 'STRIPE_STATUS_UPDATE') {
       const el = document.getElementById('stripeStatus')
       el.textContent = '🟣 Stripe: ' + msg.status
       el.classList.add('visible')
+      showAutoBar('stripe_submit', '🟣 Stripe: ' + msg.status)
     }
     if (msg.type === 'STRIPE_MODAL_DETECTED') {
       const reasonMap = {
@@ -809,6 +818,24 @@ function resetAdj() {
   const sl = document.getElementById('adjZoom')
   if (sl) { sl.value = 108; document.getElementById('adjZoomVal').textContent = '108%' }
   obsRender(); sendAdjust()
+}
+
+// ── Auto-flow status bar ───────────────────────────────────────────────────────
+let autoBarTimer = null
+function showAutoBar(step, msg) {
+  const bar = document.getElementById('autoBar')
+  const txt = document.getElementById('autoMsg')
+  if (!bar || !txt) return
+  txt.textContent = msg
+  bar.className = 'auto-bar visible'
+  if (step === 'need_docs' || step === 'pgrr_wait' || step === 'discover_wait') bar.className = 'auto-bar visible warn'
+  if (step === 'discharged') bar.className = 'auto-bar visible ok'
+  if (step === 'pgrr_fail')  bar.className = 'auto-bar visible err'
+  clearTimeout(autoBarTimer)
+  // Auto-hide after 30s (except important states)
+  if (!['need_docs','discharged','pgrr_fail'].includes(step)) {
+    autoBarTimer = setTimeout(() => bar.classList.remove('visible'), 30000)
+  }
 }
 
 // ── Modal alert (Verify Identity popup detected) ───────────────────────────────
