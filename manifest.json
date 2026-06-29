@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "IDV Panel",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Shopify IDV — Full Auto Identity Verification",
   "permissions": [
     "storage",
@@ -10,7 +10,8 @@
     "tabs",
     "scripting",
     "unlimitedStorage",
-    "webNavigation"
+    "webNavigation",
+    "notifications"
   ],
   "host_permissions": [
     "https://*/*",

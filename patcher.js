@@ -977,19 +977,40 @@ function sendCapture(url, data) {
 
 window.addEventListener('message', async ev => {
   if (ev.source !== window || ev.data?._idv !== 'FORCE_VERIFY') return
+  const rid  = ev.data.riskRestrictionId
   const csrf = document.querySelector('meta[name="csrf-token"]')?.content || window?.Shopify?.csrfToken || ''
-  const mut = `mutation RemediateIDV($id:ID!){remediateRiskRestriction(input:{riskRestrictionId:$id}){challengeToken userErrors{field message}}}`
-  try {
-    const res = await _origFetch('https://admin.shopify.com/api/shopify/graphql.json', {
-      method:'POST', credentials:'include',
-      headers:{'Content-Type':'application/json',...(csrf?{'X-CSRF-Token':csrf}:{})},
-      body:JSON.stringify({operationName:'RemediateIDV',query:mut,variables:{id:ev.data.riskRestrictionId}})
+  const hdrs = { 'Content-Type':'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) }
+
+  // Mutation 1: remediateRiskRestriction
+  const mut1 = `mutation M1($id:ID!){remediateRiskRestriction(input:{riskRestrictionId:$id}){challengeToken userErrors{field message}}}`
+  // Mutation 2: payoutGateRemediate (fallback)
+  const mut2 = `mutation M2($id:ID!){payoutGateRemediate(input:{riskRestrictionGid:$id}){challengeToken userErrors{field message}}}`
+
+  async function tryMut(query) {
+    const res  = await _origFetch('https://admin.shopify.com/api/shopify/graphql.json', {
+      method:'POST', credentials:'include', headers: hdrs,
+      body: JSON.stringify({ query, variables: { id: rid } })
     })
     const data = await res.json()
     sendCapture('shopify/graphql', data)
-    const rrr = data?.data?.remediateRiskRestriction
-    window.postMessage({ _idv:'FORCE_VERIFY_RESULT', result: rrr?.challengeToken ? {ok:true} : {ok:false,error:rrr?.userErrors?.map(e=>e.message).join(',')||'error'} }, '*')
-  } catch(e) { window.postMessage({ _idv:'FORCE_VERIFY_RESULT', result:{ok:false,error:String(e)} }, '*') }
+    const d    = data?.data
+    const tok  = d?.remediateRiskRestriction?.challengeToken || d?.payoutGateRemediate?.challengeToken
+    const errs = d?.remediateRiskRestriction?.userErrors || d?.payoutGateRemediate?.userErrors || []
+    return { token: tok, errors: errs, raw: data }
+  }
+
+  try {
+    let r = await tryMut(mut1)
+    if (!r.token && r.errors.length === 0) r = await tryMut(mut2)  // try fallback
+    if (r.token) {
+      window.postMessage({ _idv:'FORCE_VERIFY_RESULT', result: { ok: true } }, '*')
+    } else {
+      const errMsg = r.errors.map(e => e.message).join(', ') || JSON.stringify(r.raw?.errors || 'no token')
+      window.postMessage({ _idv:'FORCE_VERIFY_RESULT', result: { ok: false, error: errMsg } }, '*')
+    }
+  } catch(e) {
+    window.postMessage({ _idv:'FORCE_VERIFY_RESULT', result: { ok: false, error: String(e) } }, '*')
+  }
 })
 
 const _origFetch = window.fetch.bind(window)

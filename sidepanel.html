@@ -5,379 +5,283 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>IDV Panel</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      width: 340px;
-      min-height: 100vh;
-      background: #030712;
-      color: #e2e8f0;
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      font-size: 12px;
-      overflow-x: hidden;
-    }
-
-    /* ── Header ── */
-    .header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 10px 12px;
-      border-bottom: 1px solid #1e293b;
-      background: #0a0f1e;
-    }
-    .header-title { font-size: 14px; font-weight: 700; color: #fff; }
-    .header-title span { color: #3b82f6; }
-    .header-store { font-size: 11px; color: #475569; margin-top: 2px; }
-    .header-actions { display: flex; gap: 4px; }
-    .btn-sm {
-      padding: 2px 8px;
-      border-radius: 4px;
-      border: 1px solid #1e293b;
-      background: #0f172a;
-      color: #64748b;
-      cursor: pointer;
-      font-size: 10px;
-      font-family: inherit;
-    }
-    .btn-sm:hover { background: #1e293b; color: #94a3b8; }
-    .btn-sm.danger:hover { background: #450a0a; color: #f87171; border-color: #7f1d1d; }
-
-    /* ── Main content ── */
-    .content { padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
-
-    /* ── Status badge ── */
-    .status-badge {
-      padding: 6px 10px;
-      border-radius: 6px;
-      border: 1px solid;
-      font-size: 11px;
-      display: none;
-    }
-    .status-badge.active { display: block; background: #1a0505; border-color: #7f1d1d; color: #fca5a5; }
-    .status-badge.discharged { display: block; background: #052005; border-color: #14532d; color: #86efac; }
-    .status-badge .id { font-weight: 700; }
-    .status-badge .label { margin-left: 8px; font-weight: 700; }
-
-    /* ── Steps ── */
-    .steps { display: flex; flex-direction: column; gap: 3px; }
-    .step {
-      display: flex;
-      align-items: flex-start;
-      gap: 8px;
-      padding: 7px 10px;
-      border-radius: 6px;
-      border: 1px solid #0f172a;
-    }
-    .step.done { border-color: #14532d; background: #052005; }
-    .step.current { border-color: #1d4ed8; background: #030d2d; }
-    .step.pending { border-color: #0f172a; }
-    .step-icon { font-size: 14px; line-height: 1; margin-top: 1px; flex-shrink: 0; }
-    .step.done .step-icon { color: #22c55e; }
-    .step.current .step-icon { color: #60a5fa; }
-    .step.pending .step-icon { color: #1e293b; }
-    .step-body { flex: 1; }
-    .step-label { font-weight: 700; }
-    .step.done .step-label { color: #4ade80; }
-    .step.current .step-label { color: #93c5fd; }
-    .step.pending .step-label { color: #334155; }
-    .step-hint { font-size: 10px; color: #475569; margin-top: 3px; line-height: 1.4; }
-
-    /* ── Force verify button ── */
-    .btn-force {
-      width: 100%;
-      padding: 8px 12px;
-      border-radius: 6px;
-      border: 1px solid #1d4ed8;
-      background: #030d2d;
-      color: #93c5fd;
-      font-weight: 700;
-      font-size: 12px;
-      cursor: pointer;
-      font-family: inherit;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      transition: all 0.15s;
-    }
-    .btn-force:hover { background: #0a1a4f; }
-    .btn-force.visible { display: flex; }
-    .btn-force.loading { opacity: 0.6; cursor: wait; }
-    .btn-force.success { border-color: #14532d; background: #052005; color: #4ade80; }
-    .btn-force.error { border-color: #7f1d1d; background: #1a0505; color: #f87171; }
-    .force-error { font-size: 10px; color: #f87171; padding: 4px 2px; display: none; word-break: break-all; }
-    .force-error.visible { display: block; }
-
-    /* ── Submit to Stripe button ── */
-    .btn-stripe {
-      width: 100%;
-      padding: 8px 12px;
-      border-radius: 6px;
-      border: 1px solid #7c3aed;
-      background: #13002e;
-      color: #c4b5fd;
-      font-weight: 700;
-      font-size: 12px;
-      cursor: pointer;
-      font-family: inherit;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-    }
-    .btn-stripe:hover { background: #1e0050; }
-    .btn-stripe.visible { display: flex; }
-
-    /* ── Documents section ── */
-    .section-title {
-      font-size: 10px;
-      color: #334155;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      margin-bottom: 6px;
-    }
-    .doc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-    .doc-slot {
-      border: 1px dashed #1e293b;
-      border-radius: 6px;
-      padding: 8px;
-      cursor: pointer;
-      text-align: center;
-      transition: all 0.15s;
-      position: relative;
-      background: #0a0f1e;
-    }
-    .doc-slot:hover { border-color: #3b82f6; background: #030d2d; }
-    .doc-slot.has-file { border-color: #14532d; border-style: solid; background: #052005; }
-    .doc-slot-label { font-size: 10px; color: #475569; margin-top: 4px; }
-    .doc-slot.has-file .doc-slot-label { color: #4ade80; }
-    .doc-slot-icon { font-size: 18px; }
-    .doc-slot input[type="file"] { display: none; }
-    .doc-preview {
-      width: 100%;
-      height: 40px;
-      object-fit: cover;
-      border-radius: 3px;
-      display: none;
-    }
-    .doc-slot.has-file .doc-preview { display: none; }
-    .doc-slot.has-file img.doc-preview.show { display: block; }
-    .doc-slot.has-file video.doc-preview.show { display: block; }
-    .doc-slot.has-file .doc-slot-icon { display: none; }
-
-    .selfies-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
-
-    /* ── Captured tokens ── */
-    .token-list { display: flex; flex-direction: column; gap: 3px; }
-    .token-row {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      background: #0a0f1e;
-      border-radius: 5px;
-      padding: 5px 8px;
-    }
-    .token-key { color: #475569; width: 80px; flex-shrink: 0; font-size: 10px; }
-    .token-val { color: #cbd5e1; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .token-copy {
-      color: #334155;
-      cursor: pointer;
-      font-size: 14px;
-      flex-shrink: 0;
-      background: none;
-      border: none;
-      padding: 0;
-      font-family: inherit;
-    }
-    .token-copy:hover { color: #3b82f6; }
-
-    /* ── Camera switcher ── */
-    .cam-switcher {
-      display: flex;
-      gap: 5px;
-    }
-    .cam-btn {
-      flex: 1;
-      padding: 6px 4px;
-      border-radius: 5px;
-      border: 1px solid #1e293b;
-      background: #0a0f1e;
-      color: #475569;
-      font-size: 10px;
-      font-weight: 700;
-      cursor: pointer;
-      font-family: inherit;
-      text-align: center;
-      transition: all 0.15s;
-    }
-    .cam-btn:hover { border-color: #3b82f6; color: #93c5fd; background: #030d2d; }
-    .cam-btn.active { border-color: #1d4ed8; background: #030d2d; color: #60a5fa; }
-
-    /* ── Image adjust ── */
-    .adj-row {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      margin-bottom: 5px;
-    }
-    .adj-label {
-      font-size: 10px;
-      color: #475569;
-      width: 42px;
-      flex-shrink: 0;
-    }
-    .adj-val {
-      font-size: 10px;
-      color: #60a5fa;
-      width: 34px;
-      text-align: right;
-      flex-shrink: 0;
-    }
-    .adj-row input[type=range] {
-      flex: 1;
-      accent-color: #3b82f6;
-      height: 3px;
-      cursor: pointer;
-    }
-    .adj-reset {
-      padding: 3px 8px;
-      border-radius: 4px;
-      border: 1px solid #1e293b;
-      background: #0a0f1e;
-      color: #475569;
-      font-size: 10px;
-      cursor: pointer;
-      font-family: inherit;
-    }
-    .adj-reset:hover { background: #1e293b; color: #94a3b8; }
-
-    /* ── Empty state ── */
-    .empty { text-align: center; padding: 40px 20px; color: #1e293b; }
-    .empty-icon { font-size: 32px; margin-bottom: 12px; }
-    .empty-text { font-size: 11px; margin-bottom: 6px; }
-    .empty-hint { font-size: 10px; color: #0f172a; }
-    .empty-url { color: #1d4ed8; font-size: 11px; }
-
-    /* ── OBS preview ── */
-    .obs-wrap {
-      position: relative;
-      width: 100%;
-      aspect-ratio: 16/9;
-      background: #000;
-      border-radius: 6px;
-      overflow: hidden;
-      border: 1px solid #1e293b;
-      cursor: crosshair;
-      user-select: none;
-    }
-    .obs-img {
-      position: absolute;
-      transform-origin: center center;
-      pointer-events: none;
-    }
-    .obs-hint {
-      position: absolute;
-      bottom: 4px; right: 6px;
-      font-size: 9px; color: #334155;
-      pointer-events: none;
-    }
-    .obs-badge {
-      position: absolute;
-      top: 4px; left: 6px;
-      font-size: 9px; color: #475569;
-      pointer-events: none;
-    }
-
-    /* ── Video slot ── */
-    .video-slot {
-      border: 1px dashed #7c3aed;
-      border-radius: 6px;
-      padding: 8px;
-      cursor: pointer;
-      text-align: center;
-      background: #0a0f1e;
-      transition: all 0.15s;
-      position: relative;
-    }
-    .video-slot:hover { border-color: #a78bfa; background: #13002e; }
-    .video-slot.has-file { border-style: solid; border-color: #7c3aed; background: #13002e; }
-    .video-slot input[type="file"] { display: none; }
-    .video-slot-label { font-size: 10px; color: #7c3aed; margin-top: 4px; }
-    .video-slot.has-file .video-slot-label { color: #a78bfa; }
-    .video-slot-icon { font-size: 18px; }
-    .video-preview {
-      width: 100%; height: 50px; object-fit: cover;
-      border-radius: 3px; display: none;
-    }
-    .video-slot.has-file .video-preview { display: block; }
-    .video-slot.has-file .video-slot-icon { display: none; }
-
-    /* ── Scrollbar ── */
-    ::-webkit-scrollbar { width: 3px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 2px; }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{width:340px;min-height:100vh;background:#030712;color:#e2e8f0;font-family:'SF Mono','Fira Code',monospace;font-size:12px;overflow-x:hidden}
+    .hdr{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;border-bottom:1px solid #1e293b;background:#080e1f;position:sticky;top:0;z-index:10}
+    .hdr-left{display:flex;align-items:center;gap:8px}
+    .hdr-logo{font-size:18px;color:#3b82f6;line-height:1}
+    .hdr-info .store-name{font-size:13px;font-weight:700;color:#fff}
+    .hdr-info .store-sub{font-size:10px;color:#475569;margin-top:1px}
+    .hdr-actions{display:flex;gap:4px;align-items:center}
+    .btn-xs{padding:3px 8px;border-radius:4px;border:1px solid #1e293b;background:#0f172a;color:#64748b;cursor:pointer;font-size:10px;font-family:inherit;transition:all .12s}
+    .btn-xs:hover{background:#1e293b;color:#94a3b8}
+    .btn-xs.danger:hover{background:#450a0a;color:#f87171;border-color:#7f1d1d}
+    .tabs{display:flex;border-bottom:1px solid #1e293b;background:#040b18}
+    .tab{flex:1;padding:7px 4px;font-size:10px;font-weight:700;text-align:center;cursor:pointer;color:#334155;border-bottom:2px solid transparent;transition:all .12s;font-family:inherit;background:none;border-left:none;border-right:none;border-top:none}
+    .tab:hover{color:#64748b}
+    .tab.active{color:#60a5fa;border-bottom-color:#3b82f6;background:#030d2d}
+    .tab-pane{display:none}
+    .tab-pane.active{display:block}
+    .content{padding:10px 12px;display:flex;flex-direction:column;gap:9px}
+    .progress-wrap{background:#0f172a;border:1px solid #1e293b;border-radius:6px;padding:8px 10px}
+    .progress-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+    .progress-label{font-size:10px;color:#475569}
+    .progress-pct{font-size:11px;font-weight:700;color:#60a5fa}
+    .progress-bar{height:4px;background:#0f172a;border-radius:2px;overflow:hidden;border:1px solid #1e293b}
+    .progress-fill{height:100%;background:linear-gradient(90deg,#1d4ed8,#3b82f6);border-radius:2px;transition:width .4s ease}
+    .progress-fill.done{background:linear-gradient(90deg,#16a34a,#22c55e)}
+    .status-badge{padding:7px 10px;border-radius:6px;border:1px solid;font-size:11px;display:none}
+    .status-badge.active{display:block;background:#1a0505;border-color:#7f1d1d;color:#fca5a5}
+    .status-badge.discharged{display:block;background:#052005;border-color:#14532d;color:#86efac}
+    .badge-row{display:flex;align-items:center;justify-content:space-between}
+    .badge-id{font-weight:700;font-size:12px}
+    .badge-status{font-weight:700;font-size:11px}
+    .badge-meta{font-size:10px;color:#475569;margin-top:3px;display:flex;gap:10px}
+    .poll-bar{display:none;align-items:center;gap:7px;padding:6px 10px;background:#0a0f1e;border:1px solid #1e293b;border-radius:6px;font-size:10px}
+    .poll-bar.active{display:flex}
+    .poll-dot{width:6px;height:6px;border-radius:50%;background:#3b82f6;animation:pulse 1.4s ease-in-out infinite;flex-shrink:0}
+    @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.8)}}
+    .poll-text{color:#60a5fa;flex:1}
+    .poll-meta{color:#334155;font-size:9px}
+    .btn-poll-stop{padding:2px 7px;border-radius:3px;border:1px solid #334155;background:none;color:#334155;font-size:9px;cursor:pointer;font-family:inherit}
+    .btn-poll-stop:hover{border-color:#f87171;color:#f87171}
+    .btn-poll-now{padding:2px 7px;border-radius:3px;border:1px solid #1d4ed8;background:none;color:#60a5fa;font-size:9px;cursor:pointer;font-family:inherit}
+    .btn-poll-now:hover{background:#030d2d}
+    .quick-nav{display:flex;gap:5px}
+    .btn-nav{flex:1;padding:5px 4px;border-radius:5px;border:1px solid #1e293b;background:#0a0f1e;color:#475569;font-size:10px;cursor:pointer;font-family:inherit;text-align:center;transition:all .12s;line-height:1.3}
+    .btn-nav:hover{border-color:#3b82f6;color:#93c5fd;background:#030d2d}
+    .btn-force{width:100%;padding:8px 12px;border-radius:6px;border:1px solid #1d4ed8;background:#030d2d;color:#93c5fd;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;display:none;align-items:center;justify-content:center;gap:6px;transition:all .15s}
+    .btn-force:hover{background:#0a1a4f}
+    .btn-force.visible{display:flex}
+    .btn-force.loading{opacity:.6;cursor:wait}
+    .btn-force.success{border-color:#14532d;background:#052005;color:#4ade80}
+    .btn-force.error{border-color:#7f1d1d;background:#1a0505;color:#f87171}
+    .force-error{font-size:10px;color:#f87171;padding:4px 2px;display:none;word-break:break-all;line-height:1.4}
+    .force-error.visible{display:block}
+    .btn-stripe{width:100%;padding:8px 12px;border-radius:6px;border:1px solid #7c3aed;background:#13002e;color:#c4b5fd;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;display:none;align-items:center;justify-content:center;gap:6px;transition:all .15s}
+    .btn-stripe:hover{background:#1e0050}
+    .btn-stripe.visible{display:flex}
+    .steps{display:flex;flex-direction:column;gap:3px}
+    .step{display:flex;align-items:flex-start;gap:8px;padding:6px 10px;border-radius:6px;border:1px solid #0f172a}
+    .step.done{border-color:#14532d;background:#052005}
+    .step.current{border-color:#1d4ed8;background:#030d2d}
+    .step-icon{font-size:13px;line-height:1;margin-top:1px;flex-shrink:0}
+    .step.done .step-icon{color:#22c55e}
+    .step.current .step-icon{color:#60a5fa}
+    .step.pending .step-icon{color:#1e293b}
+    .step-body{flex:1}
+    .step-label{font-weight:700}
+    .step.done .step-label{color:#4ade80}
+    .step.current .step-label{color:#93c5fd}
+    .step.pending .step-label{color:#334155}
+    .step-hint{font-size:10px;color:#475569;margin-top:2px;line-height:1.4}
+    .step-time{font-size:9px;color:#334155;margin-top:2px}
+    .sec-title{font-size:10px;color:#334155;text-transform:uppercase;letter-spacing:.1em;margin-bottom:5px;display:flex;align-items:center;justify-content:space-between}
+    .token-list{display:flex;flex-direction:column;gap:3px}
+    .token-row{display:flex;align-items:center;gap:6px;background:#0a0f1e;border-radius:5px;padding:5px 8px;border:1px solid #0f172a}
+    .token-key{color:#475569;width:80px;flex-shrink:0;font-size:10px}
+    .token-val{color:#cbd5e1;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+    .token-copy{color:#334155;cursor:pointer;font-size:13px;flex-shrink:0;background:none;border:none;padding:0;font-family:inherit}
+    .token-copy:hover{color:#3b82f6}
+    .btn-copy-all{padding:4px 10px;border-radius:4px;border:1px solid #1e293b;background:#0a0f1e;color:#334155;font-size:10px;cursor:pointer;font-family:inherit;transition:all .12s}
+    .btn-copy-all:hover{border-color:#3b82f6;color:#60a5fa}
+    .stripe-status{padding:5px 8px;background:#13002e;border:1px solid #7c3aed;border-radius:5px;font-size:10px;color:#a78bfa;display:none;margin-top:-5px}
+    .stripe-status.visible{display:block}
+    .doc-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+    .doc-slot{border:1px dashed #1e293b;border-radius:6px;padding:8px;cursor:pointer;text-align:center;transition:all .15s;position:relative;background:#0a0f1e}
+    .doc-slot:hover{border-color:#3b82f6;background:#030d2d}
+    .doc-slot.has-file{border-color:#14532d;border-style:solid;background:#052005}
+    .doc-slot-label{font-size:10px;color:#475569;margin-top:4px}
+    .doc-slot.has-file .doc-slot-label{color:#4ade80}
+    .doc-slot-icon{font-size:18px}
+    .doc-slot input[type="file"]{display:none}
+    .doc-preview{width:100%;height:38px;object-fit:cover;border-radius:3px;display:none}
+    .doc-slot.has-file .doc-preview.show{display:block}
+    .doc-slot.has-file .doc-slot-icon{display:none}
+    .selfies-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px}
+    .cam-switcher{display:flex;gap:5px;margin-bottom:8px}
+    .cam-btn{flex:1;padding:6px 4px;border-radius:5px;border:1px solid #1e293b;background:#0a0f1e;color:#475569;font-size:10px;font-weight:700;cursor:pointer;font-family:inherit;text-align:center;transition:all .15s}
+    .cam-btn:hover{border-color:#3b82f6;color:#93c5fd;background:#030d2d}
+    .cam-btn.active{border-color:#1d4ed8;background:#030d2d;color:#60a5fa}
+    .adj-row{display:flex;align-items:center;gap:7px;margin-bottom:5px}
+    .adj-label{font-size:10px;color:#475569;width:42px;flex-shrink:0}
+    .adj-val{font-size:10px;color:#60a5fa;width:34px;text-align:right;flex-shrink:0}
+    .adj-row input[type=range]{flex:1;accent-color:#3b82f6;height:3px;cursor:pointer}
+    .adj-reset{padding:3px 8px;border-radius:4px;border:1px solid #1e293b;background:#0a0f1e;color:#475569;font-size:10px;cursor:pointer;font-family:inherit}
+    .adj-reset:hover{background:#1e293b;color:#94a3b8}
+    .obs-wrap{position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:6px;overflow:hidden;border:1px solid #1e293b;cursor:crosshair;user-select:none;margin-bottom:6px}
+    .obs-img{position:absolute;transform-origin:center center;pointer-events:none}
+    .obs-hint{position:absolute;bottom:4px;right:6px;font-size:9px;color:#334155;pointer-events:none}
+    .obs-badge{position:absolute;top:4px;left:6px;font-size:9px;color:#475569;pointer-events:none}
+    .persona-save{width:100%;padding:6px 10px;border-radius:5px;border:1px dashed #1d4ed8;background:none;color:#3b82f6;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:all .12s;margin-bottom:8px}
+    .persona-save:hover{background:#030d2d;border-style:solid}
+    .persona-list{display:flex;flex-direction:column;gap:5px}
+    .persona-card{background:#0a0f1e;border:1px solid #1e293b;border-radius:6px;padding:7px 10px;display:flex;align-items:center;gap:8px}
+    .persona-name{flex:1;color:#94a3b8;font-size:11px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .persona-dots{display:flex;gap:3px;flex-shrink:0}
+    .persona-dot{width:7px;height:7px;border-radius:50%;background:#1e293b}
+    .persona-dot.on{background:#22c55e}
+    .persona-actions{display:flex;gap:4px;flex-shrink:0}
+    .btn-persona-load{padding:3px 8px;border-radius:4px;border:1px solid #1d4ed8;background:none;color:#60a5fa;font-size:10px;cursor:pointer;font-family:inherit}
+    .btn-persona-load:hover{background:#030d2d}
+    .btn-persona-del{padding:3px 6px;border-radius:4px;border:1px solid #334155;background:none;color:#475569;font-size:10px;cursor:pointer;font-family:inherit}
+    .btn-persona-del:hover{border-color:#7f1d1d;color:#f87171}
+    .persona-empty{text-align:center;padding:16px;color:#334155;font-size:11px}
+    .events-list{display:flex;flex-direction:column;gap:3px;max-height:calc(100vh - 120px);overflow-y:auto}
+    .ev-row{display:flex;align-items:flex-start;gap:7px;padding:5px 8px;background:#0a0f1e;border-radius:5px;border-left:2px solid #1e293b}
+    .ev-row.banking{border-left-color:#1d4ed8}
+    .ev-row.pgrr,.ev-row.remediate{border-left-color:#7c3aed}
+    .ev-row.civa{border-left-color:#0891b2}
+    .ev-row.stripe{border-left-color:#6d28d9}
+    .ev-row.discharge{border-left-color:#16a34a}
+    .ev-row.poll{border-left-color:#374151}
+    .ev-time{font-size:10px;color:#334155;flex-shrink:0;width:28px;text-align:right}
+    .ev-name{font-size:10px;color:#64748b;flex:1}
+    .ev-scope{font-size:9px;color:#1e293b}
+    .ev-empty{text-align:center;padding:24px;color:#334155;font-size:11px}
+    .store-list{display:flex;flex-direction:column;gap:5px}
+    .store-card{background:#0a0f1e;border:1px solid #1e293b;border-radius:6px;padding:8px 10px;cursor:pointer;transition:all .12s}
+    .store-card:hover{border-color:#3b82f6;background:#030d2d}
+    .store-card.current{border-color:#1d4ed8;background:#030d2d}
+    .store-card.discharged{border-color:#14532d;background:#052005}
+    .sc-row{display:flex;align-items:center;justify-content:space-between}
+    .sc-name{font-weight:700;font-size:12px;color:#94a3b8}
+    .store-card.current .sc-name{color:#93c5fd}
+    .store-card.discharged .sc-name{color:#4ade80}
+    .sc-right{display:flex;align-items:center;gap:8px}
+    .sc-steps{font-size:10px;color:#334155}
+    .sc-dot{font-size:12px}
+    .sc-meta{font-size:10px;color:#334155;margin-top:2px;display:flex;gap:8px}
+    .sc-poll{display:flex;align-items:center;gap:4px;color:#3b82f6}
+    .sc-poll-dot{width:5px;height:5px;border-radius:50%;background:#3b82f6;animation:pulse 1.4s ease-in-out infinite}
+    .stores-empty{text-align:center;padding:32px 16px;color:#1e293b}
+    .stores-empty-icon{font-size:28px;margin-bottom:8px}
+    .stores-empty-text{font-size:11px}
+    .empty{text-align:center;padding:40px 20px;color:#1e293b}
+    .empty-icon{font-size:32px;margin-bottom:12px}
+    .empty-text{font-size:11px;margin-bottom:6px;color:#334155}
+    .empty-url{color:#1d4ed8;font-size:11px}
+    .empty-hint{font-size:10px;color:#0f172a;margin-top:8px}
+    ::-webkit-scrollbar{width:3px}
+    ::-webkit-scrollbar-track{background:transparent}
+    ::-webkit-scrollbar-thumb{background:#1e293b;border-radius:2px}
   </style>
 </head>
 <body>
 
-<!-- Header -->
-<div class="header">
-  <div>
-    <div class="header-title"><span>⬡</span> IDV Panel</div>
-    <div class="header-store" id="hdrStore">no store detected</div>
+<div class="hdr">
+  <div class="hdr-left">
+    <div class="hdr-logo">⬡</div>
+    <div class="hdr-info">
+      <div class="store-name" id="hdrStore">IDV Panel</div>
+      <div class="store-sub" id="hdrSub">no store detected</div>
+    </div>
   </div>
-  <div class="header-actions">
-    <button class="btn-sm" id="btnExport" style="display:none">export</button>
-    <button class="btn-sm danger" id="btnClear" style="display:none">✕</button>
+  <div class="hdr-actions">
+    <button class="btn-xs" id="btnExport" style="display:none" title="Export JSON">↓ export</button>
+    <button class="btn-xs danger" id="btnClear" style="display:none" title="Clear session">✕</button>
   </div>
 </div>
 
-<div class="content">
+<div class="tabs">
+  <button class="tab active" data-tab="main">Main</button>
+  <button class="tab" data-tab="assets">Assets</button>
+  <button class="tab" data-tab="events">Events</button>
+  <button class="tab" data-tab="stores">Stores</button>
+</div>
 
-  <!-- Restriction status -->
-  <div class="status-badge" id="statusBadge">
-    <span>Restriction </span>
-    <span class="id" id="restrictionId">—</span>
-    <span class="label" id="restrictionLabel">—</span>
-  </div>
+<!-- TAB: MAIN -->
+<div class="tab-pane active" id="tab-main">
+  <div class="content">
 
-  <!-- Force PGRR button -->
-  <div>
-    <button class="btn-force" id="btnForce">▶ Force verify (PGRR)</button>
-    <div class="force-error" id="forceError"></div>
-  </div>
-
-  <!-- Submit to Stripe button -->
-  <button class="btn-stripe" id="btnStripe">🟣 Open Stripe & Auto Submit</button>
-
-  <!-- Steps -->
-  <div class="steps" id="steps"></div>
-
-  <!-- Camera switcher -->
-  <div id="camSwitcher">
-    <div class="section-title">Camera Image Override</div>
-    <div class="cam-switcher">
-      <button class="cam-btn active" id="camBtnFront">🪪 Front</button>
-      <button class="cam-btn" id="camBtnBack">🪪 Back</button>
-      <button class="cam-btn" id="camBtnSelfie">🤳 Selfie</button>
+    <div class="progress-wrap" id="progressWrap" style="display:none">
+      <div class="progress-header">
+        <span class="progress-label">Flow progress</span>
+        <span class="progress-pct" id="progressPct">0%</span>
+      </div>
+      <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
     </div>
-  </div>
 
-  <!-- OBS-style live preview + drag to position -->
-  <div id="imgAdjust">
-    <div class="section-title" style="margin-bottom:6px">
-      Image Adjust (drag to move · scroll to zoom)
-      <button class="adj-reset" id="adjReset">Reset</button>
+    <div class="status-badge" id="statusBadge">
+      <div class="badge-row">
+        <span class="badge-id" id="restrictionId">—</span>
+        <span class="badge-status" id="restrictionLabel">—</span>
+      </div>
+      <div class="badge-meta">
+        <span id="badgeUpdated"></span>
+        <span id="badgePollCount"></span>
+      </div>
     </div>
-    <!-- Drag preview -->
-    <div class="obs-wrap" id="obsWrap">
-      <img class="obs-img" id="obsImg" />
-      <video class="obs-img" id="obsVid" muted loop playsinline style="display:none"></video>
-      <span class="obs-badge" id="obsBadge">no image</span>
-      <span class="obs-hint">scroll = zoom · drag = move</span>
+
+    <div class="poll-bar" id="pollBar">
+      <div class="poll-dot"></div>
+      <span class="poll-text">Polling discharge…</span>
+      <span class="poll-meta" id="pollMeta"></span>
+      <button class="btn-poll-now" id="btnPollNow">now</button>
+      <button class="btn-poll-stop" id="btnPollStop">stop</button>
     </div>
-    <!-- Fallback sliders (still visible below preview) -->
-    <div style="margin-top:6px">
+
+    <div>
+      <button class="btn-force" id="btnForce">▶ Force verify (PGRR)</button>
+      <div class="force-error" id="forceError"></div>
+    </div>
+
+    <button class="btn-stripe" id="btnStripe">🟣 Open Stripe &amp; Auto Submit</button>
+    <div class="stripe-status" id="stripeStatus"></div>
+
+    <div id="quickNav" style="display:none">
+      <div class="sec-title">Quick Nav</div>
+      <div class="quick-nav">
+        <button class="btn-nav" id="btnNavBalance">💰 Balance<br>Page</button>
+        <button class="btn-nav" id="btnNavPayments">💳 Payments<br>Settings</button>
+        <button class="btn-nav" id="btnNavStripeNew">🟣 New<br>Stripe Tab</button>
+      </div>
+    </div>
+
+    <div class="steps" id="steps"></div>
+
+    <div id="tokensSection" style="display:none">
+      <div class="sec-title">
+        Captured
+        <button class="btn-copy-all" id="btnCopyAll">copy all</button>
+      </div>
+      <div class="token-list" id="tokenList"></div>
+    </div>
+
+    <div class="empty" id="emptyState">
+      <div class="empty-icon">⬡</div>
+      <div class="empty-text">Navigate to Shopify admin</div>
+      <div class="empty-url">admin.shopify.com/store/…</div>
+      <div class="empty-hint">Data captured automatically</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- TAB: ASSETS -->
+<div class="tab-pane" id="tab-assets">
+  <div class="content">
+
+    <div>
+      <div class="sec-title">Camera Override</div>
+      <div class="cam-switcher">
+        <button class="cam-btn active" id="camBtnFront">🪪 Front</button>
+        <button class="cam-btn" id="camBtnBack">🪪 Back</button>
+        <button class="cam-btn" id="camBtnSelfie">🤳 Selfie</button>
+      </div>
+    </div>
+
+    <div>
+      <div class="sec-title" style="margin-bottom:6px">
+        Preview (drag·scroll=zoom)
+        <button class="adj-reset" id="adjReset">Reset</button>
+      </div>
+      <div class="obs-wrap" id="obsWrap">
+        <img class="obs-img" id="obsImg" />
+        <video class="obs-img" id="obsVid" muted loop playsinline style="display:none"></video>
+        <span class="obs-badge" id="obsBadge">no image</span>
+        <span class="obs-hint">scroll=zoom · drag=move</span>
+      </div>
       <div class="adj-row">
         <span class="adj-label">Zoom</span>
         <input type="range" id="adjZoom" min="50" max="250" value="108" step="1" />
@@ -388,70 +292,88 @@
         <button class="cam-btn active" id="toggleNoise" style="flex:1">📺 Noise: ON</button>
       </div>
     </div>
-  </div>
 
-  <!-- Documents -->
-  <div id="docsSection">
-    <div class="section-title">Documents to submit</div>
-    <div class="doc-grid">
-      <label class="doc-slot" id="slotFront">
-        <input type="file" accept="image/*" id="inputFront" />
-        <div class="doc-slot-icon">🪪</div>
-        <img class="doc-preview" id="prevFront" />
-        <div class="doc-slot-label">DL Front</div>
-      </label>
-      <label class="doc-slot" id="slotBack">
-        <input type="file" accept="image/*" id="inputBack" />
-        <div class="doc-slot-icon">🪪</div>
-        <img class="doc-preview" id="prevBack" />
-        <div class="doc-slot-label">DL Back</div>
-      </label>
+    <div>
+      <div class="sec-title">Identity Documents</div>
+      <div class="doc-grid">
+        <label class="doc-slot" id="slotFront">
+          <input type="file" accept="image/*" id="inputFront" />
+          <div class="doc-slot-icon">🪪</div>
+          <img class="doc-preview" id="prevFront" />
+          <div class="doc-slot-label">DL Front</div>
+        </label>
+        <label class="doc-slot" id="slotBack">
+          <input type="file" accept="image/*" id="inputBack" />
+          <div class="doc-slot-icon">🪪</div>
+          <img class="doc-preview" id="prevBack" />
+          <div class="doc-slot-label">DL Back</div>
+        </label>
+      </div>
     </div>
-    <div style="margin-top:6px">
-      <div class="section-title" style="margin-bottom:4px">Selfies (image OR video — for liveness)</div>
+
+    <div>
+      <div class="sec-title">Selfies (image or video)</div>
       <div class="selfies-grid">
         <label class="doc-slot" id="slotS0">
           <input type="file" accept="image/*,video/*" id="inputS0" />
           <div class="doc-slot-icon">🤳</div>
           <img class="doc-preview" id="prevS0" />
-          <video class="doc-preview vid-preview" id="vidS0" muted loop playsinline></video>
+          <video class="doc-preview" id="vidS0" muted loop playsinline></video>
           <div class="doc-slot-label">Slot 1</div>
         </label>
         <label class="doc-slot" id="slotS1">
           <input type="file" accept="image/*,video/*" id="inputS1" />
           <div class="doc-slot-icon">🤳</div>
           <img class="doc-preview" id="prevS1" />
-          <video class="doc-preview vid-preview" id="vidS1" muted loop playsinline></video>
+          <video class="doc-preview" id="vidS1" muted loop playsinline></video>
           <div class="doc-slot-label">Slot 2</div>
         </label>
         <label class="doc-slot" id="slotS2">
           <input type="file" accept="image/*,video/*" id="inputS2" />
           <div class="doc-slot-icon">🤳</div>
           <img class="doc-preview" id="prevS2" />
-          <video class="doc-preview vid-preview" id="vidS2" muted loop playsinline></video>
+          <video class="doc-preview" id="vidS2" muted loop playsinline></video>
           <div class="doc-slot-label">Slot 3</div>
         </label>
       </div>
-      <div style="font-size:10px;color:#475569;margin-top:4px;text-align:center">
-        Each slot accepts image (.jpg/.png) OR video (.mp4/.webm)
+      <div style="font-size:10px;color:#334155;margin-top:4px;text-align:center">Each slot accepts image or video for liveness</div>
+    </div>
+
+    <div>
+      <div class="sec-title">Persona Library</div>
+      <button class="persona-save" id="btnSavePersona">+ Save current as persona…</button>
+      <div class="persona-list" id="personaList">
+        <div class="persona-empty" id="personaEmpty">No personas saved yet</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- TAB: EVENTS -->
+<div class="tab-pane" id="tab-events">
+  <div class="content" style="padding-top:8px">
+    <div class="sec-title" id="eventsTitle">
+      Events
+      <button class="btn-xs" id="btnClearEvents">clear log</button>
+    </div>
+    <div class="events-list" id="eventsList">
+      <div class="ev-empty" id="eventsEmpty">No events captured yet</div>
+    </div>
+  </div>
+</div>
+
+<!-- TAB: STORES -->
+<div class="tab-pane" id="tab-stores">
+  <div class="content" style="padding-top:8px">
+    <div class="sec-title">All Stores</div>
+    <div class="store-list" id="storeList">
+      <div class="stores-empty" id="storesEmpty">
+        <div class="stores-empty-icon">⬡</div>
+        <div class="stores-empty-text">No stores with data yet</div>
       </div>
     </div>
   </div>
-
-  <!-- Captured tokens -->
-  <div id="tokensSection" style="display:none">
-    <div class="section-title">Captured</div>
-    <div class="token-list" id="tokenList"></div>
-  </div>
-
-  <!-- Empty state -->
-  <div class="empty" id="emptyState">
-    <div class="empty-icon">⬡</div>
-    <div class="empty-text">Navigate to Shopify admin</div>
-    <div class="empty-url">admin.shopify.com/store/…</div>
-    <div class="empty-hint" style="margin-top:8px">Data captured automatically</div>
-  </div>
-
 </div>
 
 <script src="sidepanel.js"></script>

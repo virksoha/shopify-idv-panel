@@ -39,6 +39,18 @@ window.addEventListener('message', ev => {
     chrome.runtime.sendMessage({ type: 'CAPTURE', ...payload }).catch(() => {})
   }
 
+  if (d?._idv === 'POLL_RESULT') {
+    // Parse discharge status from poll response
+    const bh = d.data?.data?.shopifyPaymentsAccount?.bankAccount
+    if (bh?.riskRestrictions !== undefined) {
+      const active = bh.riskRestrictions.some(r => r.status === 'ACTIVE')
+      const store  = d.store || window.location.pathname.match(/\/store\/([^/?#]+)/)?.[1]
+      if (store) {
+        chrome.runtime.sendMessage({ type: 'CAPTURE', store, url: 'shopify/graphql', captures: { discharge_detected: !active, _event: active ? 'poll_still_active' : 'discharge_detected', risk_restrictions: bh.riskRestrictions }, timestamp: Date.now() }).catch(() => {})
+      }
+    }
+  }
+
   if (d?._idv === 'IDV_PHASE_REQUEST') {
     const phase = d.phase || 'selfie'
     ssSet('__idv_phase__', phase)
