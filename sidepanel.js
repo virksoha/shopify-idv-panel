@@ -194,6 +194,9 @@ async function init() {
     if (msg.type === 'BACKEND_STATUS') {
       updateBackendPanel(msg.result)
     }
+    if (msg.type === 'IDV_VERIFY_FAILED') {
+      showVerifyFailAlert()
+    }
     if (msg.type === 'PAGE_CONTEXT') {
       if (msg.store && msg.store !== currentStore) {
         currentStore = msg.store
@@ -571,22 +574,22 @@ async function doForceVerify() {
     }
 
     if (!rid) {
-      // Auto-open Balance page to capture restriction ID, then retry
-      btn.textContent = '⬡ Opening Balance page…'
-      showAutoBar('discover_wait', '🔍 Opening Balance page to find restriction ID...')
-      openAdminPage('balance/account')
-      // Wait for patcher to fire and capture
-      await new Promise(r => setTimeout(r, 4000))
-      const sess2 = await new Promise(resolve =>
-        chrome.runtime.sendMessage({ type:'GET_SESSION', store:currentStore }, r => resolve(r?.session))
+      // Second attempt: re-run discovery (tries store-specific URL now)
+      showAutoBar('discover_wait', '🔍 Retrying discovery on current page...')
+      btn.textContent = '🔍 Retrying discovery…'
+      await new Promise(r => setTimeout(r, 1000))
+      const found2 = await new Promise(resolve =>
+        chrome.runtime.sendMessage({ type: 'AUTO_DISCOVER', store: currentStore }, r => resolve(r?.restrictionId || null))
       )
-      rid = sess2?.state?.active_restriction_gid || sess2?.state?.active_restriction_id
-      if (!rid) {
-        btn.textContent = '✕ Balance page opened — wait 3s then retry'
+      if (found2) {
+        rid = found2
+      } else {
+        // Still not found — tell user to navigate to balance page but don't auto-navigate
+        btn.textContent = '✕ No restriction found'
         btn.className = 'btn-force visible error'
-        errDiv.textContent = 'Balance page opened in background. Wait 3 seconds for data to load, then click this button again.'
+        errDiv.textContent = '⚠️ Restriction ID not found. Go to Balance page or Payments settings — extension will auto-capture it when page loads. Then click Force Verify again.'
         errDiv.className = 'force-error visible'
-        showAutoBar('discover_fail', '🔍 Balance page opened — wait 3s then click Force Verify again')
+        showAutoBar('discover_fail', '🔍 Navigate to Balance or Payments page — extension will auto-capture restriction ID')
         return
       }
     }
@@ -931,6 +934,24 @@ function showAutoBar(step, msg) {
   // Auto-hide after 30s (except important states)
   if (!['need_docs','discharged','pgrr_fail'].includes(step)) {
     autoBarTimer = setTimeout(() => bar.classList.remove('visible'), 30000)
+  }
+}
+
+// ── Verify fail alert ──────────────────────────────────────────────────────────
+function showVerifyFailAlert() {
+  const bar = document.getElementById('autoBar')
+  const txt = document.getElementById('autoMsg')
+  if (bar && txt) {
+    txt.textContent = '❌ Couldn\'t verify ID — try a clearer/different document photo'
+    bar.className = 'auto-bar visible err'
+  }
+  // Flash the confidence bar red too
+  const cb = document.getElementById('confidenceBar')
+  if (cb) {
+    cb.style.display = 'block'
+    cb.className = 'confidence-bar notready'
+    const msg = document.getElementById('confidenceMsg')
+    if (msg) msg.textContent = '❌ ID rejected by Shopify — upload a clearer document photo'
   }
 }
 

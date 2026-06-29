@@ -73,6 +73,10 @@ window.addEventListener('message', ev => {
     const store = window.location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
     chrome.runtime.sendMessage({ type: 'BACKEND_STATUS_FROM_PAGE', store, result: d.result }).catch(() => {})
   }
+
+  if (d?._idv === 'IDV_VERIFY_FAILED') {
+    chrome.runtime.sendMessage({ type: 'IDV_VERIFY_FAILED', store: d.store, reason: d.reason, href: d.href }).catch(() => {})
+  }
 })
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {

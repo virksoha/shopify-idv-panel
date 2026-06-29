@@ -204,6 +204,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     broadcastToSidePanel({ type: 'BACKEND_STATUS', store: msg.store, result: msg.result })
     return true
   }
+
+  if (msg.type === 'IDV_VERIFY_FAILED') {
+    notify('idv_fail_' + msg.store, '❌ ID Verification Failed', `Store: ${msg.store} — Couldn't verify ID. Try a different document.`)
+    autoStatus(msg.store, 'pgrr_fail', '❌ Couldn\'t verify ID — try a clearer/different document')
+    broadcastToSidePanel({ type: 'IDV_VERIFY_FAILED', store: msg.store, reason: msg.reason })
+    return true
+  }
 })
 
 // ── Session storage ────────────────────────────────────────────────────────────
@@ -332,18 +339,38 @@ async function injectFallbackPGRR(tabId, restrictionId) {
       target: { tabId },
       world: 'MAIN',
       func: async (rid) => {
-        const csrf = document.querySelector('meta[name="csrf-token"]')?.content
-                  || window.Shopify?.csrfToken || ''
-        const mut = `mutation PGRR($id:ID!){payoutGateRemediate(input:{riskRestrictionGid:$id}){challengeToken userErrors{field message}}}`
+        const csrf = document.querySelector('meta[name="csrf-token"]')?.content || window.Shopify?.csrfToken || ''
+        const store = window.location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
+        const hdrs = { 'Content-Type': 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) }
+        const gqlUrls = store
+          ? [`https://admin.shopify.com/store/${store}/api/shopify/graphql.json`, 'https://admin.shopify.com/api/shopify/graphql.json']
+          : ['https://admin.shopify.com/api/shopify/graphql.json']
+        const mut1 = `mutation M1($id:ID!){remediateRiskRestriction(input:{riskRestrictionId:$id}){challengeToken userErrors{field message}}}`
+        const mut2 = `mutation PGRR($id:ID!){payoutGateRemediate(input:{riskRestrictionGid:$id}){challengeToken userErrors{field message}}}`
+        async function tryGql(query) {
+          for (const url of gqlUrls) {
+            try {
+              const res = await fetch(url, { method:'POST', credentials:'include', headers:hdrs, body: JSON.stringify({ query, variables:{ id: rid } }) })
+              const ct = res.headers.get('content-type') || ''
+              if (!ct.includes('json')) continue
+              const d = await res.json()
+              if (d?.data) return d
+            } catch(_) {}
+          }
+          return null
+        }
         try {
-          const res = await fetch('https://admin.shopify.com/api/shopify/graphql.json', {
-            method: 'POST', credentials: 'include',
-            headers: { 'Content-Type': 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) },
-            body: JSON.stringify({ query: mut, variables: { id: rid } })
-          })
-          const d = await res.json()
-          window.postMessage({ _idv: 'CAPTURE', store: window.location.pathname.match(/\/store\/([^/?#]+)/)?.[1], url: 'shopify/graphql', captures: { jwt: d?.data?.payoutGateRemediate?.challengeToken, jwt_type: 'pgrr_fallback', _event: 'pgrr_jwt_minted' }, timestamp: Date.now() }, '*')
-          return d?.data?.payoutGateRemediate?.challengeToken ? { ok: true } : { ok: false, error: JSON.stringify(d?.data?.payoutGateRemediate?.userErrors || d?.errors || 'no token') }
+          let d = await tryGql(mut1)
+          const tok1 = d?.data?.remediateRiskRestriction?.challengeToken
+          const err1 = d?.data?.remediateRiskRestriction?.userErrors || []
+          if (!tok1 && err1.length === 0) d = await tryGql(mut2)
+          const tok = d?.data?.remediateRiskRestriction?.challengeToken || d?.data?.payoutGateRemediate?.challengeToken
+          if (tok) {
+            window.postMessage({ _idv:'CAPTURE', store, url:'shopify/graphql', captures:{ jwt:tok, jwt_type:'pgrr_fallback', _event:'pgrr_jwt_minted' }, timestamp:Date.now() }, '*')
+            return { ok: true }
+          }
+          const errs = d?.data?.remediateRiskRestriction?.userErrors || d?.data?.payoutGateRemediate?.userErrors || d?.errors || []
+          return { ok: false, error: JSON.stringify(errs) || 'no token' }
         } catch(e) { return { ok: false, error: String(e) } }
       },
       args: [restrictionId]
@@ -390,20 +417,33 @@ async function injectDiscovery(store) {
       target: { tabId: adminTab.id },
       world: 'MAIN',
       func: async () => {
-        const q = `query IDVDiscover{shopifyPaymentsAccount{bankAccount{id riskRestrictions{id status}}}}`
-        const res = await fetch('https://admin.shopify.com/api/shopify/graphql.json', {
-          method:'POST', credentials:'include',
-          headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ query: q })
-        })
-        const data = await res.json()
+        const q = `query IDVDiscover{shopifyPaymentsAccount{bankAccount{id riskRestrictions{id status type reason}}}}`
+        const csrf = document.querySelector('meta[name="csrf-token"]')?.content || window?.Shopify?.csrfToken || ''
+        const hdrs = { 'Content-Type':'application/json', ...(csrf ? {'X-CSRF-Token':csrf} : {}) }
+        const store = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
+        // Try store-specific URL first (works on account_review), then global
+        const urls = store
+          ? [`https://admin.shopify.com/store/${store}/api/shopify/graphql.json`, 'https://admin.shopify.com/api/shopify/graphql.json']
+          : ['https://admin.shopify.com/api/shopify/graphql.json']
+        let data
+        for (const url of urls) {
+          try {
+            const res = await fetch(url, { method:'POST', credentials:'include', headers:hdrs, body: JSON.stringify({ query: q }) })
+            const ct = res.headers.get('content-type') || ''
+            if (!ct.includes('json')) continue
+            const d = await res.json()
+            if (d?.data) { data = d; break }
+          } catch(_) {}
+        }
+        if (!data) return null
         const ba = data?.data?.shopifyPaymentsAccount?.bankAccount
         const active = ba?.riskRestrictions?.find(r => r.status === 'ACTIVE')
-        const store = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
         if (store && ba) {
           window.postMessage({ _idv:'CAPTURE', store, url:'shopify/graphql', captures:{
             bank_account_id: ba.id,
             risk_restriction_id: active?.id,
+            active_restriction_id: active?.id ? active.id.match(/\/(\d+)$/)?.[1] : null,
+            active_restriction_gid: active?.id,
             risk_restrictions: ba.riskRestrictions,
             _event: 'banking_home_banking'
           }, timestamp: Date.now() }, '*')
@@ -472,6 +512,11 @@ async function backendVerifyCheck(store) {
       func: async () => {
         const csrf = document.querySelector('meta[name="csrf-token"]')?.content || window?.Shopify?.csrfToken || ''
         const hdrs = { 'Content-Type': 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) }
+        const store = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
+        // Try store-specific GQL URL first (works on account_review), then global
+        const gqlUrls = store
+          ? [`https://admin.shopify.com/store/${store}/api/shopify/graphql.json`, 'https://admin.shopify.com/api/shopify/graphql.json']
+          : ['https://admin.shopify.com/api/shopify/graphql.json']
 
         // Deep query: restriction details + verification sessions + identity verification
         const q = `query IDVBackendCheck {
@@ -503,14 +548,22 @@ async function backendVerifyCheck(store) {
         }`
 
         try {
-          const res  = await fetch('https://admin.shopify.com/api/shopify/graphql.json', {
-            method: 'POST', credentials: 'include', headers: hdrs,
-            body: JSON.stringify({ query: q })
-          })
-          const data = await res.json()
-          const acc  = data?.data?.shopifyPaymentsAccount
-          const ba   = acc?.bankAccount
-          const store = location.pathname.match(/\/store\/([^/?#]+)/)?.[1] || null
+          let data
+          for (const gqlUrl of gqlUrls) {
+            try {
+              const res = await fetch(gqlUrl, {
+                method: 'POST', credentials: 'include', headers: hdrs,
+                body: JSON.stringify({ query: q })
+              })
+              const ct = res.headers.get('content-type') || ''
+              if (!ct.includes('json')) continue
+              const d = await res.json()
+              if (d?.data) { data = d; break }
+            } catch(_) {}
+          }
+          if (!data) throw new Error('All GQL endpoints returned non-JSON — session may have expired')
+          const acc = data?.data?.shopifyPaymentsAccount
+          const ba  = acc?.bankAccount
 
           // Active restrictions
           const activeRestrictions = (ba?.riskRestrictions || []).filter(r => r.status === 'ACTIVE')
@@ -583,13 +636,22 @@ async function backendVerifyCheck(store) {
           return result
 
         } catch(e) {
-          // Fallback: simpler query if deep one fails
+          // Fallback: simpler query trying all URL options
           try {
-            const res2 = await fetch('https://admin.shopify.com/api/shopify/graphql.json', {
-              method: 'POST', credentials: 'include', headers: hdrs,
-              body: JSON.stringify({ query: `query{shopifyPaymentsAccount{bankAccount{riskRestrictions{id status type reason}}}}` })
-            })
-            const d2 = await res2.json()
+            let d2
+            for (const gqlUrl of gqlUrls) {
+              try {
+                const r2 = await fetch(gqlUrl, {
+                  method: 'POST', credentials: 'include', headers: hdrs,
+                  body: JSON.stringify({ query: `query{shopifyPaymentsAccount{bankAccount{riskRestrictions{id status type reason}}}}` })
+                })
+                const ct2 = r2.headers.get('content-type') || ''
+                if (!ct2.includes('json')) continue
+                const dd = await r2.json()
+                if (dd?.data) { d2 = dd; break }
+              } catch(_) {}
+            }
+            if (!d2) return { ok: false, error: String(e) }
             const arr = d2?.data?.shopifyPaymentsAccount?.bankAccount?.riskRestrictions || []
             const active = arr.filter(r => r.status === 'ACTIVE')
             return {
