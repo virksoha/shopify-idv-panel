@@ -21,19 +21,30 @@ const IDV = {
   dlFront:      ssGet('__idv_dl_front__'),
   dlBack:       ssGet('__idv_dl_back__'),
   selfies:      [ssGet('__idv_selfie_0__'), ssGet('__idv_selfie_1__'), ssGet('__idv_selfie_2__')].filter(Boolean),
-  selfieVideo:  null,
+  selfieSlots:  [],     // [{kind:'image'|'video', src, vidEl, ready}]
+  activeSelfieIdx: 0,   // which selfie slot is being shown
   phase:        'id',
   idStep:       0,
   camActive:    false,
   currentImg:   null,
-  selfieVidEl:  null,
-  selfieVidReady: false,
-  mirror:       true,   // mirror selfie like a real front camera
-  noiseEnabled: true,   // subtle anti-detection noise
-  faceOval:     null,   // detected face oval bounds from DOM
+  mirror:       true,
+  noiseEnabled: true,
+  faceOval:     null,
   adjZoom:      1.08,
   adjOffX:      0,
   adjOffY:      0
+}
+
+function srcKind(src) {
+  if (!src || typeof src !== 'string') return null
+  if (src.startsWith('data:video/') || src.startsWith('data:application/octet-stream')) return 'video'
+  if (src.startsWith('data:image/')) return 'image'
+  if (src.startsWith('data:')) return 'image'  // fallback
+  return 'image'
+}
+
+function getActiveSelfieSlot() {
+  return IDV.selfieSlots[IDV.activeSelfieIdx] || IDV.selfieSlots[0] || null
 }
 
 // ── Message bus ────────────────────────────────────────────────────────────────
@@ -41,27 +52,32 @@ window.addEventListener('message', ev => {
   if (ev.source !== window) return
   const d = ev.data
   if (d?._idv === 'IDV_SET') {
-    if (d.dlFront)         IDV.dlFront      = d.dlFront
-    if (d.dlBack)          IDV.dlBack       = d.dlBack
-    if (d.selfies?.length) IDV.selfies      = d.selfies
-    if (d.selfieVideo && d.selfieVideo !== IDV.selfieVideo) {
-      IDV.selfieVideo = d.selfieVideo
-      prepSelfieVideo()
+    if (d.dlFront)         IDV.dlFront = d.dlFront
+    if (d.dlBack)          IDV.dlBack  = d.dlBack
+    if (d.selfies?.length) {
+      IDV.selfies = d.selfies
+      rebuildSelfieSlots()
     }
     if (d.phase) IDV.phase = d.phase
     updateBadge()
+  }
+  if (d?._idv === 'IDV_SELFIE_SLOT') {
+    IDV.activeSelfieIdx = d.index || 0
+    const slot = getActiveSelfieSlot()
+    if (slot?.kind === 'video' && slot.vidEl) startSelfieVideo(slot.vidEl)
+    else if (slot?.kind === 'image') loadImg(slot.src).then(img => { if (img) IDV.currentImg = img })
   }
   if (d?._idv === 'IDV_SWITCH') {
     IDV.phase  = d.phase  ?? IDV.phase
     IDV.idStep = d.idStep ?? IDV.idStep
     ssSet('__idv_phase__', IDV.phase)
-    // Load saved adjustments for the new phase
     const a = PHASE_ADJ[currentPhaseKey()]
     IDV.adjZoom = a.zoom; IDV.adjOffX = a.offX; IDV.adjOffY = a.offY
     showToast('⬡ IDV: ' + (IDV.phase === 'selfie' ? 'Selfie' : IDV.idStep === 1 ? 'ID Back' : 'ID Front'), '#1e3a5f')
     if (IDV.camActive) {
-      loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
-      if (IDV.phase === 'selfie' && IDV.selfieVidEl) startSelfieVideo()
+      const slot = IDV.phase === 'selfie' ? getActiveSelfieSlot() : null
+      if (slot?.kind === 'video' && slot.vidEl) startSelfieVideo(slot.vidEl)
+      else loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
     }
   }
   if (d?._idv === 'IDV_ADJUST') {
@@ -81,49 +97,62 @@ window.addEventListener('message', ev => {
 })
 
 function pickSrc() {
-  if (IDV.phase === 'selfie') return IDV.selfies[0] || IDV.dlFront
+  if (IDV.phase === 'selfie') {
+    const slot = getActiveSelfieSlot()
+    return slot?.src || IDV.selfies[0] || IDV.dlFront
+  }
   return IDV.idStep === 1 ? (IDV.dlBack || IDV.dlFront) : IDV.dlFront
 }
 
-// ── Hidden video element for liveness ─────────────────────────────────────────
-function prepSelfieVideo() {
-  if (!IDV.selfieVideo) return
-  if (IDV.selfieVidEl) {
-    try { IDV.selfieVidEl.pause(); IDV.selfieVidEl.src = ''; IDV.selfieVidEl.remove() } catch(_) {}
-  }
-  IDV.selfieVidReady = false
-  const blobUrl = b64ToBlob(IDV.selfieVideo)
-  if (!blobUrl) { console.log('[IDV] video blob conversion failed'); return }
+// ── Build selfie slots (image OR video per slot) ──────────────────────────────
+function rebuildSelfieSlots() {
+  // Tear down old video elements
+  IDV.selfieSlots.forEach(s => {
+    if (s.vidEl) { try { s.vidEl.pause(); s.vidEl.src = ''; s.vidEl.remove() } catch(_) {} }
+  })
+  IDV.selfieSlots = []
+  IDV.selfies.forEach((src, idx) => {
+    if (!src) return
+    const kind = srcKind(src)
+    const slot = { kind, src, ready: false, vidEl: null }
+    if (kind === 'video') prepSlotVideo(slot, idx)
+    else slot.ready = true
+    IDV.selfieSlots.push(slot)
+  })
+  console.log('[IDV] Selfie slots:', IDV.selfieSlots.map(s => s.kind).join(','))
+}
+
+function prepSlotVideo(slot, idx) {
+  const blobUrl = b64ToBlob(slot.src)
+  if (!blobUrl) { console.log('[IDV] slot ' + idx + ' video blob fail'); return }
   const vid = document.createElement('video')
-  vid.muted = true
-  vid.loop = true
-  vid.playsInline = true
-  vid.autoplay = true
-  vid.preload = 'auto'
-  vid.crossOrigin = 'anonymous'
+  vid.muted = true; vid.loop = true; vid.playsInline = true
+  vid.autoplay = true; vid.preload = 'auto'
   vid.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1'
   vid.addEventListener('loadeddata', () => {
-    IDV.selfieVidReady = true
-    console.log('[IDV] ✓ selfie video loaded:', vid.videoWidth + 'x' + vid.videoHeight)
-    vid.play().catch(e => console.log('[IDV] play err (will retry):', e.message))
+    slot.ready = true
+    console.log('[IDV] ✓ slot ' + idx + ' video loaded: ' + vid.videoWidth + 'x' + vid.videoHeight)
+    vid.play().catch(_ => {})
+    updateBadge()
   })
-  vid.addEventListener('error', e => console.log('[IDV] video error:', e))
+  vid.addEventListener('error', () => console.log('[IDV] slot ' + idx + ' video error'))
   vid.src = blobUrl
   const attach = () => { document.body.appendChild(vid); vid.load() }
   if (document.body) attach()
   else document.addEventListener('DOMContentLoaded', attach)
-  IDV.selfieVidEl = vid
+  slot.vidEl = vid
 }
 
-function startSelfieVideo() {
-  if (!IDV.selfieVidEl) return
-  const v = IDV.selfieVidEl
-  v.muted = true; v.loop = true; v.playsInline = true
-  if (v.paused) v.play().catch(_ => {})
-  // Retry after small delay (autoplay sometimes needs this)
-  setTimeout(() => { if (v.paused) v.play().catch(_ => {}) }, 200)
-  setTimeout(() => { if (v.paused) v.play().catch(_ => {}) }, 800)
+function startSelfieVideo(vidEl) {
+  if (!vidEl) return
+  vidEl.muted = true; vidEl.loop = true; vidEl.playsInline = true
+  if (vidEl.paused) vidEl.play().catch(_ => {})
+  setTimeout(() => { if (vidEl.paused) vidEl.play().catch(_ => {}) }, 200)
+  setTimeout(() => { if (vidEl.paused) vidEl.play().catch(_ => {}) }, 800)
 }
+
+// Build slots on initial load
+if (IDV.selfies.length) rebuildSelfieSlots()
 
 // ── On-screen badge ───────────────────────────────────────────────────────────
 let badge = null
@@ -138,7 +167,8 @@ function initBadge() {
 }
 function updateBadge() {
   if (!badge) return
-  const vidTag = IDV.selfieVidReady ? ' 🎬' : ''
+  const hasVid = IDV.selfieSlots.some(s => s.kind === 'video' && s.ready)
+  const vidTag = hasVid ? ' 🎬' : ''
   if (IDV.camActive) {
     badge.style.background = '#052005'; badge.style.color = '#4ade80'
     badge.style.border = '1px solid #14532d'; badge.textContent = '⬡ IDV CAM ACTIVE' + vidTag
@@ -211,27 +241,23 @@ async function buildFakeStream(src) {
   let ox = 0, oy = 0, sc = 1, vx = 0.15, vy = 0.1, vs = 0.0001
   const streamStart = performance.now()
 
-  // Pre-allocated noise buffer (anti-detection)
-  let noiseImageData = null
+  // Noise overlay using small low-alpha dots (composites correctly over canvas)
   function applyNoise() {
     if (!IDV.noiseEnabled) return
-    if (!noiseImageData) noiseImageData = ctx.createImageData(W, H)
-    const data = noiseImageData.data
-    // Sparse low-amplitude noise (~1% of pixels)
-    for (let i = 0; i < 12000; i++) {
-      const idx = (Math.random() * W * H | 0) * 4
-      const n = (Math.random() * 14 | 0) - 7
-      data[idx]   = 128 + n
-      data[idx+1] = 128 + n
-      data[idx+2] = 128 + n
-      data[idx+3] = 8
+    for (let i = 0; i < 220; i++) {
+      const x = Math.random() * W | 0
+      const y = Math.random() * H | 0
+      const g = 80 + (Math.random() * 140 | 0)
+      ctx.fillStyle = `rgba(${g},${g},${g},0.05)`
+      ctx.fillRect(x, y, 2, 2)
     }
-    ctx.putImageData(noiseImageData, 0, 0)
   }
 
   function drawVideo() {
-    const vid = IDV.selfieVidEl
-    if (!vid || !IDV.selfieVidReady || vid.readyState < 2) return false
+    const slot = getActiveSelfieSlot()
+    if (!slot || slot.kind !== 'video' || !slot.ready || !slot.vidEl) return false
+    const vid = slot.vidEl
+    if (vid.readyState < 2) return false
     const vw = vid.videoWidth, vh = vid.videoHeight
     if (!vw || !vh) return false
     ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H)
@@ -305,7 +331,7 @@ async function buildFakeStream(src) {
       let alive = true
       async function pump(ts) {
         if (!alive) return
-        if (IDV.phase === 'selfie' && IDV.selfieVidEl?.paused) startSelfieVideo()
+        if (IDV.phase === 'selfie') { const s = getActiveSelfieSlot(); if (s?.kind === 'video' && s.vidEl?.paused) startSelfieVideo(s.vidEl) }
         draw()
         const vf = new VideoFrame(canvas, { timestamp: Math.floor(ts * 1000), duration: 33333 })
         try { await writer.write(vf) } catch(_) {}
@@ -379,7 +405,8 @@ if (_origGUM) {
                        constraints.video.facingMode?.ideal === 'user')
     if (wantsUser) {
       IDV.phase = 'selfie'; ssSet('__idv_phase__', 'selfie')
-      if (IDV.selfieVidEl) startSelfieVideo()
+      const s = getActiveSelfieSlot()
+      if (s?.kind === 'video' && s.vidEl) startSelfieVideo(s.vidEl)
     } else {
       IDV.phase = 'id'; IDV.idStep = 0; ssSet('__idv_phase__', 'id')
     }
@@ -574,7 +601,8 @@ function checkDOM() {
     IDV.phase = 'selfie'; ssSet('__idv_phase__', 'selfie')
     const a = PHASE_ADJ.selfie; IDV.adjZoom = a.zoom; IDV.adjOffX = a.offX; IDV.adjOffY = a.offY
     window.postMessage({ _idv: 'IDV_PHASE_REQUEST', phase: 'selfie' }, '*')
-    if (IDV.selfieVidEl) startSelfieVideo()
+    const slot = getActiveSelfieSlot()
+    if (slot?.kind === 'video' && slot.vidEl) startSelfieVideo(slot.vidEl)
     else loadImg(pickSrc()).then(img => { if (img) IDV.currentImg = img })
   }
   if (ADVANCE_W.some(w => txt.includes(w))) {

@@ -33,9 +33,10 @@ function setupFileInput(inputId, slotId, previewId, storageKey) {
   chrome.storage.local.get([storageKey], r => {
     if (r[storageKey]) {
       preview.src = r[storageKey]
+      preview.classList.add('show')
       slot.classList.add('has-file')
       slot.querySelector('.doc-slot-label').textContent = '✓ Ready'
-      obsRefreshImage(r[storageKey])
+      obsRefreshMedia(r[storageKey])
     }
   })
 
@@ -45,24 +46,40 @@ function setupFileInput(inputId, slotId, previewId, storageKey) {
     const b64 = await fileToB64(file)
     await chrome.storage.local.set({ [storageKey]: b64 })
     preview.src = b64
+    preview.classList.add('show')
     slot.classList.add('has-file')
     slot.querySelector('.doc-slot-label').textContent = '✓ Ready'
-    obsRefreshImage(b64)
+    obsRefreshMedia(b64)
     updateStripeButton()
   })
 }
 
-function setupVideoInput() {
-  const input   = document.getElementById('inputSelfieVideo')
-  const slot    = document.getElementById('slotSelfieVideo')
-  const preview = document.getElementById('prevSelfieVideo')
-  if (!input) return
+// Unified slot: image OR video. Detects from MIME and shows correct preview.
+function setupMediaSlot(inputId, slotId, imgPreviewId, vidPreviewId, storageKey, defaultLabel) {
+  const input   = document.getElementById(inputId)
+  const slot    = document.getElementById(slotId)
+  const imgPrev = document.getElementById(imgPreviewId)
+  const vidPrev = document.getElementById(vidPreviewId)
+  if (!input || !slot) return
 
-  chrome.storage.local.get(['selfie_video'], r => {
-    if (r.selfie_video) {
-      preview.src = r.selfie_video
+  function showPreview(src) {
+    const isVid = src && src.startsWith('data:video/')
+    if (isVid) {
+      vidPrev.src = src; vidPrev.classList.add('show'); imgPrev.classList.remove('show')
+      vidPrev.play().catch(_ => {})
+      slot.querySelector('.doc-slot-label').textContent = '✓ Video'
+    } else if (src) {
+      imgPrev.src = src; imgPrev.classList.add('show'); vidPrev.classList.remove('show')
+      slot.querySelector('.doc-slot-label').textContent = '✓ Image'
+    } else {
+      slot.querySelector('.doc-slot-label').textContent = defaultLabel
+    }
+  }
+
+  chrome.storage.local.get([storageKey], r => {
+    if (r[storageKey]) {
+      showPreview(r[storageKey])
       slot.classList.add('has-file')
-      slot.querySelector('.video-slot-label').textContent = '✓ Video Ready'
     }
   })
 
@@ -70,10 +87,11 @@ function setupVideoInput() {
     const file = e.target.files[0]
     if (!file) return
     const b64 = await fileToB64(file)
-    await chrome.storage.local.set({ selfie_video: b64 })
-    preview.src = b64
+    await chrome.storage.local.set({ [storageKey]: b64 })
+    showPreview(b64)
     slot.classList.add('has-file')
-    slot.querySelector('.video-slot-label').textContent = '✓ Video Ready'
+    // Refresh OBS preview if this slot was active or no other media set
+    obsRefreshMedia(b64)
   })
 }
 
@@ -81,10 +99,9 @@ function setupVideoInput() {
 async function init() {
   setupFileInput('inputFront', 'slotFront', 'prevFront', 'dl_front')
   setupFileInput('inputBack',  'slotBack',  'prevBack',  'dl_back')
-  setupFileInput('inputS0',    'slotS0',    'prevS0',    'selfie_0')
-  setupFileInput('inputS1',    'slotS1',    'prevS1',    'selfie_1')
-  setupFileInput('inputS2',    'slotS2',    'prevS2',    'selfie_2')
-  setupVideoInput()
+  setupMediaSlot('inputS0', 'slotS0', 'prevS0', 'vidS0', 'selfie_0', 'Slot 1')
+  setupMediaSlot('inputS1', 'slotS1', 'prevS1', 'vidS1', 'selfie_1', 'Slot 2')
+  setupMediaSlot('inputS2', 'slotS2', 'prevS2', 'vidS2', 'selfie_2', 'Slot 3')
 
   await detectStore()
   await render()
@@ -327,57 +344,77 @@ async function switchCam(mode) {
     args:   [phase, idStep]
   }).catch(() => {})
 
-  // Update OBS preview image to match selected slot
+  // Update OBS preview to match selected slot
   const key = mode === 'front' ? 'dl_front' : mode === 'back' ? 'dl_back' : 'selfie_0'
-  chrome.storage.local.get([key], r => { if (r[key]) obsRefreshImage(r[key]) })
+  chrome.storage.local.get([key], r => { if (r[key]) obsRefreshMedia(r[key]) })
 }
 
-// ── OBS-style drag preview ────────────────────────────────────────────────────
+// ── OBS-style drag preview (supports image OR video) ─────────────────────────
 let obsCurrentSrc = null
+let obsKind       = 'image'   // 'image' or 'video'
 
-function obsRefreshImage(src) {
+function obsRefreshMedia(src) {
+  if (!src) return
   obsCurrentSrc = src
+  obsKind = src.startsWith('data:video/') ? 'video' : 'image'
   const img   = document.getElementById('obsImg')
+  const vid   = document.getElementById('obsVid')
   const badge = document.getElementById('obsBadge')
-  img.src = src
-  badge.textContent = ''
+  if (obsKind === 'video') {
+    if (vid) {
+      vid.src = src
+      vid.style.display = ''
+      vid.muted = true; vid.loop = true; vid.playsInline = true
+      vid.play().catch(_ => {})
+    }
+    if (img) img.style.display = 'none'
+  } else {
+    img.src = src
+    img.style.display = ''
+    if (vid) { vid.pause(); vid.style.display = 'none' }
+  }
+  if (badge) badge.textContent = ''
   obsRender()
 }
 
 function obsRender() {
   const wrap = document.getElementById('obsWrap')
   const img  = document.getElementById('obsImg')
-  if (!obsCurrentSrc) return
+  const vid  = document.getElementById('obsVid')
+  const target = obsKind === 'video' ? vid : img
+  if (!obsCurrentSrc || !target) return
 
   const wW = wrap.clientWidth  || 300
-  const wH = wrap.clientHeight || 169  // 16:9
+  const wH = wrap.clientHeight || 169
 
-  // Canvas space is 1280x720; preview is wW x wH
-  // Map adjOffX/Y (canvas pixels) to preview pixels
   const scaleToPreview = wW / 1280
-  const displayZoom    = ADJ.zoom
-  const imgW = img.naturalWidth  || 200
-  const imgH = img.naturalHeight || 150
-  const baseS = Math.min(1280 / imgW, 720 / imgH) * displayZoom * scaleToPreview
-  const dispW = imgW * baseS
-  const dispH = imgH * baseS
+  const mediaW = obsKind === 'video' ? (vid?.videoWidth  || 1280) : (img.naturalWidth  || 200)
+  const mediaH = obsKind === 'video' ? (vid?.videoHeight || 720)  : (img.naturalHeight || 150)
+  const baseS = Math.min(1280 / mediaW, 720 / mediaH) * ADJ.zoom * scaleToPreview
+  const dispW = mediaW * baseS
+  const dispH = mediaH * baseS
   const cx    = wW/2 + ADJ.offX * scaleToPreview
   const cy    = wH/2 + ADJ.offY * scaleToPreview
 
-  img.style.width  = dispW + 'px'
-  img.style.height = dispH + 'px'
-  img.style.left   = (cx - dispW/2) + 'px'
-  img.style.top    = (cy - dispH/2) + 'px'
+  target.style.width  = dispW + 'px'
+  target.style.height = dispH + 'px'
+  target.style.left   = (cx - dispW/2) + 'px'
+  target.style.top    = (cy - dispH/2) + 'px'
 }
+
+// Compatibility alias for older code paths
+const obsRefreshImage = obsRefreshMedia
 
 function setupOBSPreview() {
   const wrap = document.getElementById('obsWrap')
   const img  = document.getElementById('obsImg')
+  const vid  = document.getElementById('obsVid')
 
   img.addEventListener('load', obsRender)
+  if (vid) vid.addEventListener('loadedmetadata', obsRender)
 
   // Load dl_front as default preview
-  chrome.storage.local.get(['dl_front'], r => { if (r.dl_front) obsRefreshImage(r.dl_front) })
+  chrome.storage.local.get(['dl_front'], r => { if (r.dl_front) obsRefreshMedia(r.dl_front) })
 
   // Drag to move
   let dragging = false, startX = 0, startY = 0, startOffX = 0, startOffY = 0

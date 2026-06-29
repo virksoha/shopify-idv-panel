@@ -4,7 +4,7 @@ function ssGet(k)    { try { return sessionStorage.getItem(k) }  catch(_) { retu
 function ssSet(k, v) { try { sessionStorage.setItem(k, v) }      catch(_) {} }
 
 function pushImages() {
-  chrome.storage.local.get(['dl_front','dl_back','selfie_0','selfie_1','selfie_2','selfie_video'], r => {
+  chrome.storage.local.get(['dl_front','dl_back','selfie_0','selfie_1','selfie_2'], r => {
     const phase = ssGet('__idv_phase__') || 'id'
 
     const keys = { dl_front: r.dl_front, dl_back: r.dl_back, selfie_0: r.selfie_0, selfie_1: r.selfie_1, selfie_2: r.selfie_2 }
@@ -14,11 +14,10 @@ function pushImages() {
     }
 
     window.postMessage({
-      _idv:        'IDV_SET',
-      dlFront:     r.dl_front     || null,
-      dlBack:      r.dl_back      || null,
-      selfies:     [r.selfie_0, r.selfie_1, r.selfie_2].filter(Boolean),
-      selfieVideo: r.selfie_video  || null,
+      _idv:    'IDV_SET',
+      dlFront: r.dl_front  || null,
+      dlBack:  r.dl_back   || null,
+      selfies: [r.selfie_0, r.selfie_1, r.selfie_2].filter(Boolean),
       phase
     }, '*')
   })
@@ -27,7 +26,7 @@ function pushImages() {
 pushImages()
 
 chrome.storage.onChanged.addListener(changes => {
-  const watched = ['dl_front','dl_back','selfie_0','selfie_1','selfie_2','selfie_video']
+  const watched = ['dl_front','dl_back','selfie_0','selfie_1','selfie_2']
   if (watched.some(k => k in changes)) pushImages()
 })
 
